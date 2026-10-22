@@ -1,0 +1,18 @@
+ENVIE O CONTEÚDO DESTA PASTA DIRETAMENTE PARA A RAIZ DO REPOSITÓRIO.
+
+Não crie artifacts/discord-bot no GitHub.
+A raiz deve mostrar diretamente:
+- package.json
+- README.md
+- .env.example
+- src/
+- tests/
+- ROBLOX-BRIDGE-SERVER.lua
+
+Comandos padrão da hospedagem:
+Install: npm install
+Start:   npm start
+
+IMPORTANTE:
+Configure DISCORD_TOKEN e os demais Secrets pelo painel da hospedagem.
+NUNCA envie .env nem .data para o GitHub.
