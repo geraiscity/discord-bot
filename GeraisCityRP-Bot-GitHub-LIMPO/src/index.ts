@@ -1762,30 +1762,42 @@ process.on("unhandledRejection", (error) => {
   console.error("Promise rejeitada sem tratamento:", error);
 });
 
-// Health monitor: expõe apenas sinais operacionais, sem IDs, secrets ou conteúdo de incidentes.
+// Health monitor
 const app = express();
 app.use(express.json({ limit: "128kb" }));
+
 const PORT = Number(process.env.PORT ?? 3000);
 const startedAt = Date.now();
 
-registerVerificationOAuthRoutes(app, async (guildId, userId, emailVerified) =>
-  completeOAuthVerification(client, guildId, userId, emailVerified),
+registerVerificationOAuthRoutes(
+  app,
+  async (guildId, userId, emailVerified) =>
+    completeOAuthVerification(client, guildId, userId, emailVerified),
 );
+
 registerRobloxBridgeRoutes(app, client);
 
-async function respondHealth(_req: express.Request, res: express.Response) {
+async function respondHealth(
+  _req: express.Request,
+  res: express.Response
+) {
   const connected = client.isReady();
   const storage = await persistenceMode();
+
   res.status(connected ? 200 : 503).json({
     service: "Gerais City RP Bot",
-    version: "FINAL-1.2",
+    version: "FINAL-1.3",
     status: connected ? "online" : "discord_disconnected",
     connected,
     uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
     discordPingMs: connected ? client.ws.ping : null,
     persistence: storage,
-    emailVerification: oauthVerificationConfigured() ? "oauth2" : "discord_native",
-    robloxBridge: robloxBridgeConfigured() ? "configured" : "disabled",
+    emailVerification: oauthVerificationConfigured()
+      ? "oauth2"
+      : "discord_native",
+    robloxBridge: robloxBridgeConfigured()
+      ? "configured"
+      : "disabled",
     robloxEventsSinceBoot: getRobloxBridgeStats().received,
   });
 }
@@ -1794,19 +1806,56 @@ app.get("/", respondHealth);
 app.get("/health", respondHealth);
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log("[DISCORD] Verificando comunicação com a API...");
+  console.log(
+    `Health monitor do Gerais Bot disponível na porta ${PORT}`
+  );
+});
+
+let shuttingDown = false;
+
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+
+  shuttingDown = true;
+
+  console.log(`Encerramento gracioso iniciado por ${signal}.`);
+
+  client.destroy();
+
+  await closePersistence();
+
+  process.exit(0);
+}
+
+process.once("SIGTERM", () => {
+  void shutdown("SIGTERM");
+});
+
+process.once("SIGINT", () => {
+  void shutdown("SIGINT");
+});
+
+console.log("[DISCORD] Verificando comunicação com a API...");
 
 try {
-  const response = await fetch("https://discord.com/api/v10/users/@me", {
-    headers: {
-      Authorization: `Bot ${config.token}`,
-    },
-  });
+  const response = await fetch(
+    "https://discord.com/api/v10/users/@me",
+    {
+      headers: {
+        Authorization: `Bot ${config.token}`,
+      },
+    }
+  );
 
-  console.log(`[DISCORD] REST /users/@me respondeu HTTP ${response.status}`);
+  console.log(
+    `[DISCORD] REST /users/@me respondeu HTTP ${response.status}`
+  );
 
   if (response.status === 401) {
-    console.error("[DISCORD] ❌ Token recusado pela API do Discord.");
+    console.error(
+      "[DISCORD] ❌ Token recusado pela API do Discord."
+    );
+
     process.exit(1);
   }
 
@@ -1816,15 +1865,17 @@ try {
     );
   }
 } catch (error) {
-  console.error("[DISCORD] ❌ Falha ao alcançar discord.com:", error);
+  console.error(
+    "[DISCORD] ❌ Falha ao alcançar discord.com:",
+    error
+  );
 }
 
 console.log("[DISCORD] Iniciando conexão com o Gateway...");
 
 const gatewayTimeout = setTimeout(() => {
   console.error(
-    `[DISCORD] ❌ TIMEOUT: Gateway não ficou pronto após 30 segundos. ` +
-    `wsStatus=${client.ws.status} ready=${client.isReady()}`
+    `[DISCORD] ❌ TIMEOUT: Gateway não ficou pronto após 30 segundos. ready=${client.isReady()}`
   );
 }, 30_000);
 
@@ -1839,6 +1890,10 @@ try {
 } catch (error) {
   clearTimeout(gatewayTimeout);
 
-  console.error("[DISCORD] ❌ Falha ao conectar o bot ao Discord:", error);
+  console.error(
+    "[DISCORD] ❌ Falha ao conectar o bot ao Discord:",
+    error
+  );
+
   process.exit(1);
 }
