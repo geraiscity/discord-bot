@@ -1735,6 +1735,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 client.on("error", (error) => {
   console.error("Erro do cliente Discord:", error);
 });
+
 client.on("shardReady", (id) => {
   console.log(`[DISCORD] ✅ Shard ${id} conectado e pronto.`);
 });
@@ -1756,6 +1757,7 @@ client.on("shardError", (error, id) => {
 client.on("warn", (warning) => {
   console.warn("[DISCORD] ⚠️ Warning:", warning);
 });
+
 process.on("unhandledRejection", (error) => {
   console.error("Promise rejeitada sem tratamento:", error);
 });
