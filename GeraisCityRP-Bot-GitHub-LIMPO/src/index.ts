@@ -1735,7 +1735,27 @@ client.on(Events.InteractionCreate, async (interaction) => {
 client.on("error", (error) => {
   console.error("Erro do cliente Discord:", error);
 });
+client.on("shardReady", (id) => {
+  console.log(`[DISCORD] ✅ Shard ${id} conectado e pronto.`);
+});
 
+client.on("shardReconnecting", (id) => {
+  console.log(`[DISCORD] 🔄 Shard ${id} reconectando...`);
+});
+
+client.on("shardDisconnect", (event, id) => {
+  console.error(
+    `[DISCORD] ❌ Shard ${id} desconectado. Código: ${event.code} | Motivo: ${event.reason || "sem motivo"}`
+  );
+});
+
+client.on("shardError", (error, id) => {
+  console.error(`[DISCORD] ❌ Erro no shard ${id}:`, error);
+});
+
+client.on("warn", (warning) => {
+  console.warn("[DISCORD] ⚠️ Warning:", warning);
+});
 process.on("unhandledRejection", (error) => {
   console.error("Promise rejeitada sem tratamento:", error);
 });
@@ -1772,24 +1792,51 @@ app.get("/", respondHealth);
 app.get("/health", respondHealth);
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`Health monitor do Gerais Bot disponível na porta ${PORT}`);
-});
+  console.log("[DISCORD] Verificando comunicação com a API...");
 
-let shuttingDown = false;
-async function shutdown(signal: string): Promise<void> {
-  if (shuttingDown) return;
-  shuttingDown = true;
-  console.log(`Encerramento gracioso iniciado por ${signal}.`);
-  client.destroy();
-  await closePersistence();
-  process.exit(0);
+try {
+  const response = await fetch("https://discord.com/api/v10/users/@me", {
+    headers: {
+      Authorization: `Bot ${config.token}`,
+    },
+  });
+
+  console.log(`[DISCORD] REST /users/@me respondeu HTTP ${response.status}`);
+
+  if (response.status === 401) {
+    console.error("[DISCORD] ❌ Token recusado pela API do Discord.");
+    process.exit(1);
+  }
+
+  if (!response.ok) {
+    console.error(
+      `[DISCORD] ⚠️ API respondeu com status inesperado: ${response.status}`
+    );
+  }
+} catch (error) {
+  console.error("[DISCORD] ❌ Falha ao alcançar discord.com:", error);
 }
-process.once("SIGTERM", () => { void shutdown("SIGTERM"); });
-process.once("SIGINT", () => { void shutdown("SIGINT"); });
+
+console.log("[DISCORD] Iniciando conexão com o Gateway...");
+
+const gatewayTimeout = setTimeout(() => {
+  console.error(
+    `[DISCORD] ❌ TIMEOUT: Gateway não ficou pronto após 30 segundos. ` +
+    `wsStatus=${client.ws.status} ready=${client.isReady()}`
+  );
+}, 30_000);
 
 try {
   await client.login(config.token);
+
+  clearTimeout(gatewayTimeout);
+
+  console.log(
+    `[DISCORD] client.login concluído. ready=${client.isReady()}`
+  );
 } catch (error) {
-  console.error("Falha ao conectar o bot ao Discord:", error);
+  clearTimeout(gatewayTimeout);
+
+  console.error("[DISCORD] ❌ Falha ao conectar o bot ao Discord:", error);
   process.exit(1);
 }
