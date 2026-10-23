@@ -1835,40 +1835,24 @@ process.once("SIGINT", () => {
   void shutdown("SIGINT");
 });
 
-console.log("[DISCORD] Verificando comunicação com a API...");
+console.log("[DISCORD] Testando endpoint do Gateway...");
 
 try {
-  const response = await fetch(
-    "https://discord.com/api/v10/users/@me",
-    {
-      headers: {
-        Authorization: `Bot ${config.token}`,
-      },
-    }
-  );
+  const response = await fetch("https://discord.com/api/v10/gateway");
 
   console.log(
-    `[DISCORD] REST /users/@me respondeu HTTP ${response.status}`
+    `[DISCORD] GET /gateway respondeu HTTP ${response.status}`
   );
 
-  if (response.status === 401) {
-    console.error(
-      "[DISCORD] ❌ Token recusado pela API do Discord."
-    );
+  if (response.ok) {
+    const data = (await response.json()) as { url?: string };
 
-    process.exit(1);
-  }
-
-  if (!response.ok) {
-    console.error(
-      `[DISCORD] ⚠️ API respondeu com status inesperado: ${response.status}`
+    console.log(
+      `[DISCORD] ✅ Gateway encontrado: ${data.url ?? "não informado"}`
     );
   }
 } catch (error) {
-  console.error(
-    "[DISCORD] ❌ Falha ao alcançar discord.com:",
-    error
-  );
+  console.error("[DISCORD] ❌ Erro ao acessar Gateway:", error);
 }
 
 console.log("[DISCORD] Iniciando conexão com o Gateway...");
