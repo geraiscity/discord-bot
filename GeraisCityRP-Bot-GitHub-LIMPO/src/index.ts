@@ -1766,7 +1766,9 @@ process.on("unhandledRejection", (error) => {
 const app = express();
 app.use(express.json({ limit: "128kb" }));
 
-const PORT = Number(process.env.PORT ?? 3000);
+const PORT = Number(
+  process.env.SERVER_PORT ?? process.env.PORT ?? 3000
+);
 const startedAt = Date.now();
 
 registerVerificationOAuthRoutes(
