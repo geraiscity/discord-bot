@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { syncBotCommands } from "../src/command-sync.ts";
 
 const current = [
-  { name: "ticket", type: 1 },
-  { name: "painel-tickets", type: 1 },
+  { name: "painel", type: 1 },
+  { name: "avaliacao", type: 1 },
   { name: "painel-admin", type: 1 },
   { name: "reaction-role", type: 1 },
   { name: "anunciar", type: 1 },
@@ -39,24 +39,25 @@ test("sem servidor, publica globalmente uma única lista", async () => {
   assert.equal(result.scope, "global");
 });
 
-test("sincroniza servidores e remove globais atuais e legados /spoiler e /seguranca", async () => {
+test("sincroniza servidores e remove comandos globais antigos de tickets e segurança", async () => {
   const { api, operations } = fakeApi([
     { id: "a", name: "painel-tickets", type: 1 },
-    { id: "b", name: "anunciar", type: 1 },
-    { id: "c", name: "outro", type: 1 },
-    { id: "d", name: "anunciar", type: 2 },
-    { id: "e", name: "spoiler", type: 1 },
-    { id: "f", name: "seguranca", type: 1 },
+    { id: "b", name: "ticket", type: 1 },
+    { id: "c", name: "anunciar", type: 1 },
+    { id: "d", name: "outro", type: 1 },
+    { id: "e", name: "anunciar", type: 2 },
+    { id: "f", name: "spoiler", type: 1 },
+    { id: "g", name: "seguranca", type: 1 },
   ]);
   const result = await syncBotCommands({ guildIds: ["111", "222", "111"], commands: current, api });
   assert.deepEqual(operations.map((op) => op[0]), [
-    "guild", "guild", "list-global", "delete-global", "delete-global", "delete-global", "delete-global",
+    "guild", "guild", "list-global", "delete-global", "delete-global", "delete-global", "delete-global", "delete-global",
   ]);
   assert.deepEqual(operations.filter((op) => op[0] === "delete-global"), [
-    ["delete-global", "a"], ["delete-global", "b"], ["delete-global", "e"], ["delete-global", "f"],
+    ["delete-global", "a"], ["delete-global", "b"], ["delete-global", "c"], ["delete-global", "f"], ["delete-global", "g"],
   ]);
   assert.equal(result.guildCount, 2);
-  assert.equal(result.deletedGlobalCount, 4);
+  assert.equal(result.deletedGlobalCount, 5);
 });
 
 test("limpeza total explícita elimina globais antigos com nomes diferentes", async () => {
