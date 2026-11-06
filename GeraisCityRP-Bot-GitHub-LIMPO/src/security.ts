@@ -60,7 +60,7 @@ const CRITICAL_PERMISSIONS =
 
 const LOCKDOWN_MILLISECONDS = 15 * 60_000;
 const STATE_FILE = resolve(process.env.SECURITY_STATE_FILE || ".data/gerais-shield-final.json");
-const OWNER_COMMANDS = new Set(["painel-tickets", "reaction-role", "anunciar", "divulgar", "seguranca"]);
+const OWNER_COMMANDS = new Set(["painel", "avaliacao", "reaction-role", "anunciar", "divulgar", "seguranca"]);
 
 function csv(name: string): string[] {
   return (process.env[name] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
