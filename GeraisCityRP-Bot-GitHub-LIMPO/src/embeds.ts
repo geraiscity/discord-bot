@@ -1,31 +1,32 @@
 import { EmbedBuilder } from "discord.js";
 import { config } from "./config.js";
 
-export function buildTicketPanelEmbed(options: {
-  title?: string | null;
-  description?: string | null;
-  color: number;
-  footerImage?: string | null;
-  thumbnail?: string | null;
-}): EmbedBuilder {
-  const embed = new EmbedBuilder()
-    .setTitle(options.title || config.defaults.panelTitle)
+export function buildTicketPanelEmbed(): EmbedBuilder {
+  return new EmbedBuilder()
+    .setAuthor({ name: "SUPORTE GERAL GCRP" })
+    .setTitle("Central de Atendimento / Suporte")
     .setDescription(
-      options.description || config.defaults.panelDescription,
+      [
+        "Para que possamos te atender com agilidade, leia nossas diretrizes:",
+        "",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "",
+        "📌 **Diretrizes de Atendimento**",
+        "• **Respeito e Cordialidade:** O respeito mútuo é obrigatório com a equipe e com os membros.",
+        "• **Imparcialidade da Staff:** Analisaremos tudo com total imparcialidade, independentemente de quem estiver certo ou errado, ou de laços de amizade.",
+        "• **Provas Concretas:** Denúncias exigem provas válidas (prints ou vídeos) apresentadas logo no início.",
+        "• **Evite Pings Desnecessários:** Marcar a equipe repetidamente não acelera o processo e pode gerar punições.",
+        "",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "",
+        "> Aguarde pacientemente! Um membro da nossa equipe irá atendê-lo assim que possível.",
+        "",
+        "**Precisa de atendimento?** Clique no botão abaixo em **ABRIR TICKET** e escolha a categoria desejada.",
+      ].join("\n"),
     )
-    .setColor(options.color)
-    .setFooter({ text: "Atendimento da comunidade" });
-
-  if (options.footerImage || config.defaults.footerImage) {
-    embed.setImage(options.footerImage || config.defaults.footerImage!);
-  }
-  if (options.thumbnail) {
-    embed.setThumbnail(options.thumbnail);
-  }
-
-  return embed;
+    .setColor(0xed4245)
+    .setFooter({ text: "GERAIS CITY RP • CENTRAL DE ATENDIMENTO" });
 }
-
 export function buildRulesEmbed(): EmbedBuilder {
   return new EmbedBuilder()
     .setTitle("Regras do atendimento")
