@@ -74,19 +74,19 @@ const ticketTypes: Array<{
   {
     id: "bugs",
     label: "Bugs",
-    emoji: "🐛",
+    emoji: "🛠️",
     description: "Relate um problema técnico.",
   },
   {
     id: "suporte",
     label: "Suporte Geral",
-    emoji: "🛠️",
+    emoji: "💬",
     description: "Tire dúvidas e peça ajuda.",
   },
   {
     id: "denuncias",
     label: "Denúncias",
-    emoji: "⚠️",
+    emoji: "🚨",
     description: "Envie uma denúncia com provas.",
   },
   {
@@ -230,13 +230,25 @@ async function fetchInteractionTextChannel(interaction: RepliableInteraction): P
 
 function ticketPanelButtons(): ActionRowBuilder<ButtonBuilder> {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId("ticket_start")
+      .setLabel("ABRIR TICKET")
+      .setEmoji("🎫")
+      .setStyle(ButtonStyle.Primary),
+  );
+}
+
+function ticketCategoryButtons(): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
     ticketTypes.map((ticket) =>
       new ButtonBuilder()
-        .setCustomId(`ticket_open:${ticket.id}`)
+        .setCustomId(`ticket_category:${ticket.id}`)
         .setLabel(ticket.label)
         .setEmoji(ticket.emoji)
         .setStyle(
-          ticket.id === "denuncias" ? ButtonStyle.Danger : ticket.id === "compras" ? ButtonStyle.Success : ButtonStyle.Primary,
+          ticket.id === "denuncias" ? ButtonStyle.Danger :
+          ticket.id === "compras" ? ButtonStyle.Success :
+          ticket.id === "suporte" ? ButtonStyle.Secondary : ButtonStyle.Primary,
         ),
     ),
   );
@@ -983,64 +995,7 @@ async function handleInteraction(interaction: Interaction) {
 
     await interaction.deferReply({ ephemeral: true });
 
-    if (interaction.commandName === "ticket") {
-      const channel = await fetchInteractionTextChannel(interaction);
-      if (!channel || channel.type !== ChannelType.GuildText) {
-        await respond(interaction, { content: "Use este comando dentro de um canal de ticket.", ephemeral: true });
-        return;
-      }
-      const meta = ticketMetaFromChannel(channel);
-      if (!meta) {
-        await respond(interaction, { content: "Este canal não é um ticket reconhecido pelo sistema final.", ephemeral: true });
-        return;
-      }
-      const sub = interaction.options.getSubcommand(true);
-      if (sub === "assumir") {
-        await respond(interaction, { content: await claimTicket(channel, interaction.user.id), ephemeral: true });
-        return;
-      }
-      if (sub === "adicionar" || sub === "remover") {
-        const user = interaction.options.getUser("usuario", true);
-        const result = sub === "adicionar"
-          ? await addTicketMember(channel, interaction.user.id, user.id)
-          : await removeTicketMember(channel, interaction.user.id, user.id);
-        await respond(interaction, { content: result, ephemeral: true });
-        return;
-      }
-      if (sub === "renomear") {
-        if (!isTicketStaff(channel.guild, interaction.user.id)) {
-          await respond(interaction, { content: "Apenas a equipe pode renomear tickets.", ephemeral: true });
-          return;
-        }
-        const name = interaction.options.getString("nome", true).toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 70);
-        if (name.length < 2) {
-          await respond(interaction, { content: "Escolha um nome válido para o canal.", ephemeral: true });
-          return;
-        }
-        await channel.setName(name, `Ticket Final renomeado por ${interaction.user.id}`);
-        void recordTicketEvent({ guildId: channel.guild.id, channelId: channel.id, ownerId: meta.ownerId, actorId: interaction.user.id, action: "rename", payload: { name } });
-        await respond(interaction, { content: `Canal renomeado para **${name}**.`, ephemeral: true });
-        return;
-      }
-      if (sub === "fechar") {
-        if (interaction.user.id !== meta.ownerId && !isTicketStaff(channel.guild, interaction.user.id)) {
-          await respond(interaction, { content: "Somente o titular ou a equipe pode fechar este ticket.", ephemeral: true });
-          return;
-        }
-        await respond(interaction, { content: "Tem certeza que deseja encerrar este atendimento? O transcript será salvo antes da exclusão.", components: [ticketCloseConfirmButtons()], ephemeral: true });
-        return;
-      }
-      if (sub === "info") {
-        await respond(interaction, { embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle("🎫 Informações do ticket").addFields(
-          { name: "Titular", value: `<@${meta.ownerId}>`, inline: true },
-          { name: "Atendente", value: meta.claimedBy ? `<@${meta.claimedBy}>` : "Ainda não assumido", inline: true },
-          { name: "Pessoas adicionadas", value: meta.addedUserIds.length ? meta.addedUserIds.map((id) => `<@${id}>`).join(", ") : "Nenhuma", inline: false },
-        )], ephemeral: true });
-        return;
-      }
-    }
-
-    if (interaction.commandName === "painel-tickets") {
+    if (interaction.commandName === "painel" && interaction.options.getSubcommand(true) === "ticket") {
       const selectedChannel = interaction.options.getChannel("canal", true);
       const targetChannel = await interaction.guild?.channels
         .fetch(selectedChannel.id)
@@ -1403,7 +1358,16 @@ async function handleInteraction(interaction: Interaction) {
     return;
   }
 
-  if (interaction.customId === "ticket_open:compras") {
+  if (interaction.customId === "ticket_start") {
+    await interaction.reply({
+      content: "Selecione abaixo o assunto do seu atendimento para abrir o ticket correto.",
+      components: [ticketCategoryButtons()],
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (interaction.customId === "ticket_category:compras") {
     await interaction.showModal(purchaseTicketModal());
     return;
   }
@@ -1550,7 +1514,7 @@ async function handleInteraction(interaction: Interaction) {
     ephemeral: !interaction.customId.startsWith("denuncia_provas:"),
   });
 
-  if (interaction.customId.startsWith("ticket_open:")) {
+  if (interaction.customId.startsWith("ticket_category:")) {
     const type = interaction.customId.split(":")[1] as TicketType;
     if (ticketTypes.some((ticket) => ticket.id === type)) {
       const key = `${interaction.guildId ?? "dm"}:${interaction.user.id}:${type}`;
