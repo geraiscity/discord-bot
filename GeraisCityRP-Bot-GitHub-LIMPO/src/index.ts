@@ -552,7 +552,8 @@ async function hasTicketStaffRole(guild: NonNullable<Interaction["guild"]>, user
 }
 
 async function isTicketStaff(guild: NonNullable<Interaction["guild"]>, userId: string): Promise<boolean> {
-  return shield.isOwner(userId) || guild.ownerId === userId || hasTicketStaffRole(guild, userId);
+  if (shield.isOwner(userId) || guild.ownerId === userId) return true;
+  return hasTicketStaffRole(guild, userId);
 }
 
 async function canManageTicketMembers(guild: NonNullable<Interaction["guild"]>, userId: string): Promise<boolean> {
