@@ -62,6 +62,9 @@ import {
 
 type TicketType = "bugs" | "suporte" | "denuncias" | "compras" | "parcerias";
 
+// Canal exclusivo para auditoria dos tickets da categoria Parcerias.
+const PARTNERSHIP_LOG_CHANNEL_ID = "1568070781391470734";
+
 const ticketTypes: Array<{
   id: TicketType;
   label: string;
@@ -527,6 +530,16 @@ async function sendGeneralLog(guild: NonNullable<Interaction["guild"]>, options:
   return log ? log.send(options).then(() => true).catch(() => false) : false;
 }
 
+
+async function sendPartnershipLog(
+  guild: NonNullable<Interaction["guild"]>,
+  options: MessageCreateOptions,
+): Promise<boolean> {
+  const channel = await guild.channels.fetch(PARTNERSHIP_LOG_CHANNEL_ID).catch(() => null);
+  if (channel?.type !== ChannelType.GuildText) return false;
+  return channel.send(options).then(() => true).catch(() => false);
+}
+
 async function claimTicket(channel: TextChannel, userId: string): Promise<string> {
   const meta = ticketMetaFromChannel(channel);
   if (!meta) return "Este canal não é um ticket reconhecido.";
@@ -608,6 +621,23 @@ async function closeTicket(channel: TextChannel, actorId: string): Promise<void>
       .setTimestamp()],
     allowedMentions: { parse: [] },
   });
+
+  if (meta.type === "parcerias") {
+    void sendPartnershipLog(channel.guild, {
+      embeds: [new EmbedBuilder()
+        .setColor(0xed4245)
+        .setAuthor({ name: "GERAIS CITY • PARCERIAS" })
+        .setTitle("🔒 Atendimento de parceria encerrado")
+        .addFields(
+          { name: "Solicitante", value: "<@" + meta.ownerId + ">", inline: true },
+          { name: "Encerrado por", value: "<@" + actorId + ">", inline: true },
+          { name: "Atendimento", value: "#" + channel.name + " • " + channel.id, inline: false },
+        )
+        .setTimestamp()],
+      allowedMentions: { parse: [] },
+    });
+  }
+
 
   const owner = await client.users.fetch(meta.ownerId).catch(() => null);
   if (owner) {
@@ -762,6 +792,22 @@ async function createTicket(
       .setTimestamp()],
     allowedMentions: { parse: [] },
   });
+
+  if (type === "parcerias") {
+    void sendPartnershipLog(interaction.guild, {
+      embeds: [new EmbedBuilder()
+        .setColor(0x5865f2)
+        .setAuthor({ name: "GERAIS CITY • PARCERIAS" })
+        .setTitle("🤝 Nova solicitação de parceria")
+        .addFields(
+          { name: "Solicitante", value: "<@" + interaction.user.id + ">", inline: true },
+          { name: "Atendimento", value: "<#" + channel.id + ">", inline: true },
+        )
+        .setTimestamp()],
+      allowedMentions: { parse: [] },
+    });
+  }
+
 
   const ticket = ticketTypes.find((item) => item.id === type)!;
   const welcomeEmbed = new EmbedBuilder()
