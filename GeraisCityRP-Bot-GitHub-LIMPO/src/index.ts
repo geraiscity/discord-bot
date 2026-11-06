@@ -862,10 +862,7 @@ async function createTicket(
         PermissionFlagsBits.AttachFiles,
       ],
     },
-  ];
-
-  for (const staffRoleId of staffRoleIds) {
-    permissionOverwrites.push({
+    ...staffRoleIds.map((staffRoleId) => ({
       id: staffRoleId,
       allow: [
         PermissionFlagsBits.ViewChannel,
@@ -879,8 +876,8 @@ async function createTicket(
         PermissionFlagsBits.ManageWebhooks,
         PermissionFlagsBits.ManageMessages,
       ],
-    });
-  }
+    })),
+  ];
 
   const channel = await interaction.guild.channels.create({
     name: channelNameFor(type, interaction.user.username),
