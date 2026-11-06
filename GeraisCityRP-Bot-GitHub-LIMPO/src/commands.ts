@@ -6,41 +6,21 @@ import {
 
 export const commandDefinitions = [
   new SlashCommandBuilder()
-    .setName("ticket")
-    .setDescription("Gerencia o ticket atual.")
-    .addSubcommand((sub) =>
-      sub
-        .setName("adicionar")
-        .setDescription("Adiciona uma pessoa ao ticket.")
-        .addUserOption((option) => option.setName("usuario").setDescription("Pessoa que poderá visualizar o ticket").setRequired(true)),
-    )
-    .addSubcommand((sub) =>
-      sub
-        .setName("remover")
-        .setDescription("Remove uma pessoa adicionada do ticket.")
-        .addUserOption((option) => option.setName("usuario").setDescription("Pessoa que perderá acesso").setRequired(true)),
-    )
-    .addSubcommand((sub) => sub.setName("assumir").setDescription("Assume o atendimento como membro da equipe."))
-    .addSubcommand((sub) =>
-      sub
-        .setName("renomear")
-        .setDescription("Renomeia o canal do ticket.")
-        .addStringOption((option) => option.setName("nome").setDescription("Novo nome").setMinLength(2).setMaxLength(70).setRequired(true)),
-    )
-    .addSubcommand((sub) => sub.setName("fechar").setDescription("Solicita o fechamento do ticket."))
-    .addSubcommand((sub) => sub.setName("info").setDescription("Mostra titular, pessoas adicionadas e atendente.")),
-
-  new SlashCommandBuilder()
-    .setName("painel-tickets")
-    .setDescription("Publica o painel para abertura de tickets.")
+    .setName("painel")
+    .setDescription("Publica painéis de atendimento do Gerais City.")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels.toString())
-    .addChannelOption((option) => option.setName("canal").setDescription("Canal onde o painel será publicado.").addChannelTypes(ChannelType.GuildText).setRequired(true))
-    .addStringOption((option) => option.setName("titulo").setDescription("Título do embed.").setRequired(false))
-    .addStringOption((option) => option.setName("descricao").setDescription("Descrição do embed.").setRequired(false))
-    .addStringOption((option) => option.setName("cor").setDescription("Cor hexadecimal, por exemplo #FFD700.").setRequired(false))
-    .addAttachmentOption((option) => option.setName("imagem").setDescription("Banner/imagem grande do painel.").setRequired(false))
-    .addAttachmentOption((option) => option.setName("thumbnail").setDescription("Imagem pequena no canto do painel.").setRequired(false))
-    .addStringOption((option) => option.setName("imagem_rodape").setDescription("URL antiga de imagem (opcional; prefira upload em imagem).").setRequired(false)),
+    .addSubcommand((sub) =>
+      sub
+        .setName("ticket")
+        .setDescription("Publica o painel para abertura de tickets.")
+        .addChannelOption((option) => option.setName("canal").setDescription("Canal onde o painel será publicado.").addChannelTypes(ChannelType.GuildText).setRequired(true))
+        .addStringOption((option) => option.setName("titulo").setDescription("Título do embed.").setRequired(false))
+        .addStringOption((option) => option.setName("descricao").setDescription("Descrição do embed.").setRequired(false))
+        .addStringOption((option) => option.setName("cor").setDescription("Cor hexadecimal, por exemplo #FFD700.").setRequired(false))
+        .addAttachmentOption((option) => option.setName("imagem").setDescription("Banner/imagem grande do painel.").setRequired(false))
+        .addAttachmentOption((option) => option.setName("thumbnail").setDescription("Imagem pequena no canto do painel.").setRequired(false))
+        .addStringOption((option) => option.setName("imagem_rodape").setDescription("URL antiga de imagem (opcional; prefira upload em imagem).").setRequired(false)),
+    ),
 
   new SlashCommandBuilder()
     .setName("painel-admin")
