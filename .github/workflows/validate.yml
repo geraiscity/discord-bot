@@ -1,0 +1,29 @@
+name: Validate Discord Bot
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main, feat/ticket-panel-flow]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: GeraisCityRP-Bot-GitHub-LIMPO
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install
+      - name: Build
+        run: npm run build
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Tests
+        run: npm test
