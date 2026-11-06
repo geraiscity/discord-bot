@@ -226,18 +226,36 @@ async function fetchInteractionTextChannel(interaction: RepliableInteraction): P
   return channel?.type === ChannelType.GuildText ? channel : null;
 }
 
-function ticketPanelButtons(): ActionRowBuilder<ButtonBuilder> {
+function ticketPanelOpenButton(): ActionRowBuilder<ButtonBuilder> {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
-    ticketTypes.map((ticket) =>
-      new ButtonBuilder()
-        .setCustomId(`ticket_open:${ticket.id}`)
-        .setLabel(ticket.label)
-        .setEmoji(ticket.emoji)
-        .setStyle(
-          ticket.id === "denuncias" ? ButtonStyle.Danger : ticket.id === "compras" ? ButtonStyle.Success : ButtonStyle.Primary,
-        ),
-    ),
+    new ButtonBuilder()
+      .setCustomId("ticket_panel_open")
+      .setLabel("ABRIR TICKET")
+      .setEmoji("🎫")
+      .setStyle(ButtonStyle.Danger),
   );
+}
+
+function ticketCategoryButtons(): ActionRowBuilder<ButtonBuilder>[] {
+  const styleByType: Record<TicketType, ButtonStyle> = {
+    bugs: ButtonStyle.Primary,
+    suporte: ButtonStyle.Secondary,
+    denuncias: ButtonStyle.Danger,
+    compras: ButtonStyle.Success,
+    parcerias: ButtonStyle.Primary,
+  };
+  const buildButton = (ticket: (typeof ticketTypes)[number]) =>
+    new ButtonBuilder()
+      .setCustomId(`ticket_open:${ticket.id}`)
+      .setLabel(ticket.label)
+      .setEmoji(ticket.emoji)
+      .setStyle(styleByType[ticket.id]);
+
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(ticketTypes.slice(0, 2).map(buildButton)),
+    new ActionRowBuilder<ButtonBuilder>().addComponents(ticketTypes.slice(2, 4).map(buildButton)),
+    new ActionRowBuilder<ButtonBuilder>().addComponents(ticketTypes.slice(4, 5).map(buildButton)),
+  ];
 }
 
 function evidenceButtons(disabled = false): ActionRowBuilder<ButtonBuilder> {
@@ -440,22 +458,10 @@ function existingTicket(guildId: string, userId: string, type: TicketType) {
   });
 }
 
-function moderationRoleIds(guild: NonNullable<Interaction["guild"]>): string[] {
-  const configuredIds = new Set(config.moderationRoleIds);
-  const configuredNames = new Set(
-    config.moderationRoleNames.map((name) => name.toLowerCase()),
-  );
-
+function ticketStaffRoleIds(guild: NonNullable<Interaction["guild"]>): string[] {
+  const configuredNames = new Set(config.ticketStaffRoleNames.map((name) => name.toLowerCase()));
   return guild.roles.cache
-    .filter(
-      (role) =>
-        role.id !== guild.id &&
-        (configuredIds.has(role.id) ||
-          configuredNames.has(role.name.toLowerCase()) ||
-          (process.env.TICKET_AUTO_INCLUDE_ADMIN_ROLES === "true" &&
-            (role.permissions.has(PermissionFlagsBits.ManageChannels) ||
-             role.permissions.has(PermissionFlagsBits.Administrator)))),
-    )
+    .filter((role) => role.id !== guild.id && configuredNames.has(role.name.toLowerCase()))
     .map((role) => role.id);
 }
 
@@ -514,23 +520,23 @@ function ticketMetaFromChannel(channel: TextChannel): TicketMeta | null {
   return parseTicketTopic(channel.topic);
 }
 
-function isTicketStaff(guild: NonNullable<Interaction["guild"]>, userId: string): boolean {
+async function isTicketStaff(guild: NonNullable<Interaction["guild"]>, userId: string): Promise<boolean> {
   if (shield.isOwner(userId) || guild.ownerId === userId) return true;
-  const member = guild.members.cache.get(userId);
+  const member = await guild.members.fetch(userId).catch(() => null);
   if (!member) return false;
-  const staff = new Set(moderationRoleIds(guild));
+  const staff = new Set(ticketStaffRoleIds(guild));
   return member.roles.cache.some((role) => staff.has(role.id));
 }
 
-function canManageTicketMembers(guild: NonNullable<Interaction["guild"]>, userId: string, meta: TicketMeta): boolean {
-  return isTicketStaff(guild, userId) || (process.env.TICKET_OWNER_CAN_MANAGE_MEMBERS === "true" && meta.ownerId === userId);
+async function canManageTicketMembers(guild: NonNullable<Interaction["guild"]>, userId: string): Promise<boolean> {
+  return isTicketStaff(guild, userId);
 }
 
 function canUseAdminPanel(interaction: ChatInputCommandInteraction | ButtonInteraction): boolean {
   if (!interaction.guild) return false;
   if (shield.isOwner(interaction.user.id) || interaction.guild.ownerId === interaction.user.id) return true;
   if (interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) return true;
-  return isTicketStaff(interaction.guild, interaction.user.id);
+  return false;
 }
 
 function parseUserReference(value: string): string | null {
@@ -574,13 +580,33 @@ async function buildTicketTranscript(channel: TextChannel, maxMessages = 500): P
   return Buffer.from(lines.join("\n"), "utf8");
 }
 
-async function privateTicketLogChannel(guild: NonNullable<Interaction["guild"]>): Promise<TextChannel | null> {
-  const id = process.env.TRANSCRIPT_CHANNEL_ID?.trim() || process.env.TICKET_LOG_CHANNEL_ID?.trim();
+async function privateTicketLogChannel(
+  guild: NonNullable<Interaction["guild"]>,
+  type: TicketType,
+): Promise<TextChannel | null> {
+  const id = config.ticketLogChannelIds[type] ||
+    process.env.TRANSCRIPT_CHANNEL_ID?.trim() ||
+    process.env.TICKET_LOG_CHANNEL_ID?.trim();
   if (!id) return null;
   const channel = await guild.channels.fetch(id).catch(() => null);
   if (channel?.type !== ChannelType.GuildText) return null;
-  if (channel.permissionsFor(guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel)) return null;
+  const everyonePermissions = channel.permissionsFor(guild.roles.everyone);
+  if (!everyonePermissions || everyonePermissions.has(PermissionFlagsBits.ViewChannel)) return null;
   return channel;
+}
+
+async function sendTicketLog(
+  guild: NonNullable<Interaction["guild"]>,
+  type: TicketType,
+  options: MessageCreateOptions,
+): Promise<boolean> {
+  const log = await privateTicketLogChannel(guild, type);
+  if (log && await log.send(options).then(() => true).catch(() => false)) return true;
+  if (securityEnvironment.ownerId) {
+    const owner = await client.users.fetch(securityEnvironment.ownerId).catch(() => null);
+    if (owner && await owner.send(options).then(() => true).catch(() => false)) return true;
+  }
+  return false;
 }
 
 async function privateGeneralLogChannel(guild: NonNullable<Interaction["guild"]>): Promise<TextChannel | null> {
@@ -609,7 +635,7 @@ async function sendGeneralLog(guild: NonNullable<Interaction["guild"]>, options:
 async function claimTicket(channel: TextChannel, userId: string): Promise<string> {
   const meta = ticketMetaFromChannel(channel);
   if (!meta) return "Este canal não é um ticket reconhecido.";
-  if (!isTicketStaff(channel.guild, userId)) return "Apenas a equipe pode assumir tickets.";
+  if (!(await isTicketStaff(channel.guild, userId))) return "Apenas membros com o cargo 🇧🇷「Equipe STAFF TCMG」 podem assumir tickets.";
   meta.claimedBy = userId;
   await updateTicketTopic(channel, meta);
   void recordTicketEvent({ guildId: channel.guild.id, channelId: channel.id, ownerId: meta.ownerId, actorId: userId, action: "claim" });
@@ -621,7 +647,7 @@ async function claimTicket(channel: TextChannel, userId: string): Promise<string
 async function addTicketMember(channel: TextChannel, actorId: string, userId: string): Promise<string> {
   const meta = ticketMetaFromChannel(channel);
   if (!meta) return "Este canal não é um ticket reconhecido.";
-  if (!canManageTicketMembers(channel.guild, actorId, meta)) return "Somente a equipe autorizada pode adicionar pessoas a este ticket.";
+  if (!(await canManageTicketMembers(channel.guild, actorId))) return "Somente membros com o cargo 🇧🇷「Equipe STAFF TCMG」 podem adicionar pessoas a este ticket.";
   if (userId === meta.ownerId || userId === client.user?.id) return "Essa pessoa já possui acesso essencial ao ticket.";
   if (meta.addedUserIds.includes(userId)) return "Essa pessoa já foi adicionada ao ticket.";
   const member = await channel.guild.members.fetch(userId).catch(() => null);
@@ -637,7 +663,7 @@ async function addTicketMember(channel: TextChannel, actorId: string, userId: st
 async function removeTicketMember(channel: TextChannel, actorId: string, userId: string): Promise<string> {
   const meta = ticketMetaFromChannel(channel);
   if (!meta) return "Este canal não é um ticket reconhecido.";
-  if (!canManageTicketMembers(channel.guild, actorId, meta)) return "Somente a equipe autorizada pode remover pessoas deste ticket.";
+  if (!(await canManageTicketMembers(channel.guild, actorId))) return "Somente membros com o cargo 🇧🇷「Equipe STAFF TCMG」 podem remover pessoas deste ticket.";
   if (userId === meta.ownerId) return "O titular do ticket não pode ser removido. Feche o ticket se necessário.";
   if (!meta.addedUserIds.includes(userId)) return "Essa pessoa não está na lista de convidados deste ticket.";
   meta.addedUserIds = meta.addedUserIds.filter((id) => id !== userId);
@@ -653,11 +679,12 @@ async function removeTicketMember(channel: TextChannel, actorId: string, userId:
 async function closeTicket(channel: TextChannel, actorId: string): Promise<void> {
   const meta = ticketMetaFromChannel(channel);
   if (!meta) throw new Error("Este canal não é um ticket reconhecido.");
-  if (actorId !== meta.ownerId && !isTicketStaff(channel.guild, actorId)) throw new Error("Somente o titular ou a equipe pode fechar este ticket.");
+  if (!(await isTicketStaff(channel.guild, actorId))) throw new Error("Somente membros com o cargo 🇧🇷「Equipe STAFF TCMG」 podem fechar tickets.");
   void recordTicketEvent({ guildId: channel.guild.id, channelId: channel.id, ownerId: meta.ownerId, actorId, action: "close_requested", payload: { claimedBy: meta.claimedBy ?? null, addedUserIds: meta.addedUserIds } });
   const transcript = await buildTicketTranscript(channel);
   const transcriptFile = new AttachmentBuilder(transcript, { name: `transcript-${channel.id}.txt` });
-  const logged = await sendTicketLog(channel.guild, {
+  const logType = ticketTypes.find((ticket) => ticket.id === meta.type)?.id ?? "suporte";
+  const logged = await sendTicketLog(channel.guild, logType, {
     embeds: [new EmbedBuilder()
       .setColor(0xed4245)
       .setTitle("🔒 Ticket encerrado")
@@ -687,14 +714,6 @@ async function closeTicket(channel: TextChannel, actorId: string): Promise<void>
       .setTimestamp()],
     allowedMentions: { parse: [] },
   });
-
-  const owner = await client.users.fetch(meta.ownerId).catch(() => null);
-  if (owner) {
-    await owner.send({
-      embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle("⭐ Como foi seu atendimento?").setDescription("Seu ticket no Gerais City RP foi encerrado. Se quiser, avalie o atendimento abaixo.")],
-      components: [ticketRatingButtons(channel.guild.id, channel.id)],
-    }).catch(() => undefined);
-  }
 
   await channel.send({ embeds: [new EmbedBuilder().setColor(0xed4245).setTitle("🔒 Atendimento encerrado").setDescription(`Fechado por <@${actorId}>. ${logged ? "O transcript foi salvo no canal de transcripts." : "Não consegui entregar o transcript; confira TRANSCRIPT_CHANNEL_ID."}\nEste canal será removido em alguns segundos.`)] }).catch(() => undefined);
   setTimeout(() => { void channel.delete(`Ticket Final encerrado por ${actorId}`).catch(() => undefined); }, 3000).unref();
@@ -735,7 +754,7 @@ async function createTicket(
     return;
   }
 
-  const staffRoleIds = moderationRoleIds(interaction.guild);
+  const staffRoleIds = ticketStaffRoleIds(interaction.guild);
   const existing = existingTicket(interaction.guild.id, interaction.user.id, type);
   if (existing) {
     await repairTicketPermissions(
