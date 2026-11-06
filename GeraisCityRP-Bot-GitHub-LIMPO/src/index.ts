@@ -499,7 +499,6 @@ async function repairTicketPermissions(
         SendMessages: true,
         ReadMessageHistory: true,
         EmbedLinks: true,
-        ManageChannels: true,
       }),
     ),
   );
@@ -833,7 +832,6 @@ async function createTicket(
         PermissionFlagsBits.SendMessages,
         PermissionFlagsBits.ReadMessageHistory,
         PermissionFlagsBits.EmbedLinks,
-        PermissionFlagsBits.ManageChannels,
       ],
     });
   }
