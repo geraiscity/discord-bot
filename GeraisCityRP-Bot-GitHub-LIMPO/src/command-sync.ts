@@ -37,7 +37,7 @@ export interface SyncResult {
 
 const CHAT_INPUT_TYPE = 1;
 // Comandos antigos deste projeto que devem desaparecer mesmo não existindo mais na lista atual.
-const LEGACY_CHAT_INPUT_NAMES = new Set(["spoiler", "seguranca"]);
+const LEGACY_CHAT_INPUT_NAMES = new Set(["spoiler", "seguranca", "ticket", "painel-tickets"]);
 
 export async function syncBotCommands(options: SyncOptions): Promise<SyncResult> {
   const { commands, api } = options;
