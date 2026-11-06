@@ -9,6 +9,7 @@ import {
 } from "discord.js";
 import { getRecentRobloxEvents, getRobloxBridgeStats, robloxBridgeConfigured } from "./roblox-bridge.js";
 import { parseTicketTopic } from "./ticket-meta.js";
+import { config } from "./config.js";
 
 export type AdminSection = "home" | "roblox" | "logs" | "tickets" | "security";
 
@@ -188,9 +189,15 @@ export async function buildAdminPanel(
         { name: "Abertos", value: String(tickets.open), inline: true },
         { name: "Assumidos", value: String(tickets.claimed), inline: true },
         { name: "Compras", value: String(tickets.purchases), inline: true },
-        { name: "Transcripts", value: process.env.TRANSCRIPT_CHANNEL_ID ? `<#${process.env.TRANSCRIPT_CHANNEL_ID}>` : process.env.TICKET_LOG_CHANNEL_ID ? `<#${process.env.TICKET_LOG_CHANNEL_ID}>` : "Canal não configurado", inline: false },
+        { name: "Log • Bugs", value: config.ticketLogChannelIds.bugs ? `<#${config.ticketLogChannelIds.bugs}>` : "Não configurado", inline: true },
+        { name: "Log • Dúvidas", value: config.ticketLogChannelIds.suporte ? `<#${config.ticketLogChannelIds.suporte}>` : "Não configurado", inline: true },
+        { name: "Log • Denúncias", value: config.ticketLogChannelIds.denuncias ? `<#${config.ticketLogChannelIds.denuncias}>` : "Não configurado", inline: true },
+        { name: "Log • Compras", value: config.ticketLogChannelIds.compras ? `<#${config.ticketLogChannelIds.compras}>` : "Não configurado", inline: true },
+        { name: "Log • Parcerias", value: config.ticketLogChannelIds.parcerias ? `<#${config.ticketLogChannelIds.parcerias}>` : "Não configurado", inline: true },
+        { name: "Canal privado de avaliações", value: config.ticketRatingsChannelId ? `<#${config.ticketRatingsChannelId}>` : "Não configurado", inline: false },
+        { name: "Cargo operacional", value: config.ticketStaffRoleNames.join(", ") || "Não configurado", inline: false },
       )
-      .setDescription("Use `/painel-tickets` para publicar o painel visual. A categoria **Compras** já faz parte da central.")
+      .setDescription("Use `/painel ticket` para publicar a central de atendimento. A equipe unificada pode assumir, adicionar pessoas e fechar tickets.")
       .setTimestamp();
     return { embeds: [embed], components: navigation(section) };
   }
