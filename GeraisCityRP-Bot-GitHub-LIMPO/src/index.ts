@@ -1094,7 +1094,8 @@ async function handleInteraction(interaction: Interaction) {
     await interaction.deferReply({ ephemeral: true });
 
     if (interaction.commandName === "painel") {
-      if (!interaction.guild) {
+      const guild = interaction.guild;
+      if (!guild) {
         await respond(interaction, { content: "Este comando só pode ser usado dentro do servidor.", ephemeral: true });
         return;
       }
@@ -1105,7 +1106,7 @@ async function handleInteraction(interaction: Interaction) {
       }
       const selectedChannel = interaction.options.getChannel("canal");
       const targetChannel = selectedChannel
-        ? await interaction.guild.channels.fetch(selectedChannel.id).catch(() => null)
+        ? await guild.channels.fetch(selectedChannel.id).catch(() => null)
         : await fetchInteractionTextChannel(interaction);
       if (!targetChannel || targetChannel.type !== ChannelType.GuildText) {
         await respond(interaction, { content: "Escolha um canal de texto válido ou execute /painel ticket dentro do canal desejado.", ephemeral: true });
@@ -1118,7 +1119,8 @@ async function handleInteraction(interaction: Interaction) {
     }
 
     if (interaction.commandName === "avaliacao") {
-      if (!interaction.guild || !(shield.isOwner(interaction.user.id) || interaction.guild.ownerId === interaction.user.id)) {
+      const guild = interaction.guild;
+      if (!guild || !(shield.isOwner(interaction.user.id) || guild.ownerId === interaction.user.id)) {
         await respond(interaction, { content: "⛔ Somente o proprietário do Gerais City RP pode publicar perfis de avaliação.", ephemeral: true });
         return;
       }
@@ -1128,7 +1130,7 @@ async function handleInteraction(interaction: Interaction) {
         return;
       }
       const staffUser = interaction.options.getUser("atendente", true);
-      const staffMember = await interaction.guild.members.fetch(staffUser.id).catch(() => null);
+      const staffMember = await guild.members.fetch(staffUser.id).catch(() => null);
       if (!staffMember) {
         await respond(interaction, { content: "Não encontrei esse atendente no servidor.", ephemeral: true });
         return;
@@ -1145,7 +1147,7 @@ async function handleInteraction(interaction: Interaction) {
         return message.author.id === client.user?.id && state?.staffId === staffMember.id;
       });
       if (existingProfile) {
-        await respond(interaction, { content: `Esse atendente já possui um perfil neste canal: https://discord.com/channels/${interaction.guild.id}/${targetChannel.id}/${existingProfile.id}`, ephemeral: true });
+        await respond(interaction, { content: `Esse atendente já possui um perfil neste canal: https://discord.com/channels/${guild.id}/${targetChannel.id}/${existingProfile.id}`, ephemeral: true });
         return;
       }
       await targetChannel.send({
@@ -1157,11 +1159,12 @@ async function handleInteraction(interaction: Interaction) {
     }
 
     if (interaction.commandName === "painel-admin") {
-      if (!interaction.guild || !(await canUseAdminPanel(interaction))) {
+      const guild = interaction.guild;
+      if (!guild || !(await canUseAdminPanel(interaction))) {
         await respond(interaction, { content: "⛔ Este painel é exclusivo da administração autorizada.", ephemeral: true });
         return;
       }
-      await respond(interaction, { ...(await buildAdminPanel(client, interaction.guild, "home", shield.panelState())), ephemeral: true });
+      await respond(interaction, { ...(await buildAdminPanel(client, guild, "home", shield.panelState())), ephemeral: true });
       return;
     }
 
@@ -1566,7 +1569,8 @@ async function handleInteraction(interaction: Interaction) {
   }
 
   if (interaction.customId.startsWith("admin_security:")) {
-    if (!interaction.guild || !(await canUseAdminPanel(interaction))) {
+    const guild = interaction.guild;
+    if (!guild || !(await canUseAdminPanel(interaction))) {
       await interaction.reply({ content: "⛔ Painel restrito à administração.", ephemeral: true }).catch(() => undefined);
       return;
     }
@@ -1581,7 +1585,7 @@ async function handleInteraction(interaction: Interaction) {
       return;
     }
     if (action === "back") {
-      await interaction.update(await buildAdminPanel(client, interaction.guild, "security", shield.panelState()));
+      await interaction.update(await buildAdminPanel(client, guild, "security", shield.panelState()));
       return;
     }
 
@@ -1621,7 +1625,7 @@ async function handleInteraction(interaction: Interaction) {
     }
     if (action === "restore_confirm") {
       await interaction.deferReply({ ephemeral: true });
-      const result = await shield.panelAction(interaction.guild, interaction.user.id, "snapshot_restore");
+      const result = await shield.panelAction(guild, interaction.user.id, "snapshot_restore");
       await interaction.editReply({ content: result.content, embeds: result.embeds });
       return;
     }
@@ -1635,14 +1639,14 @@ async function handleInteraction(interaction: Interaction) {
       return;
     }
 
-    const result = await shield.panelAction(interaction.guild, interaction.user.id, action);
+    const result = await shield.panelAction(guild, interaction.user.id, action);
     const stateChanging = new Set(["toggle", "mode", "safe", "snapshot_create", "release", "test", "verification_disable"]);
     if (stateChanging.has(action)) {
       const onConfigPage = ["bot_list", "team_list", "verification_status", "verification_disable"].includes(action);
       if (onConfigPage) {
         await interaction.update(buildAdminSecurityConfigPanel(interaction.guild, shield.panelState()));
       } else {
-        await interaction.update(await buildAdminPanel(client, interaction.guild, "security", shield.panelState()));
+        await interaction.update(await buildAdminPanel(client, guild, "security", shield.panelState()));
       }
       if (result.content || result.embeds?.length) {
         await interaction.followUp({ content: result.content, embeds: result.embeds, ephemeral: true });
@@ -1655,7 +1659,8 @@ async function handleInteraction(interaction: Interaction) {
   }
 
   if (interaction.customId.startsWith("admin_panel:")) {
-    if (!interaction.guild || !(await canUseAdminPanel(interaction))) {
+    const guild = interaction.guild;
+    if (!guild || !(await canUseAdminPanel(interaction))) {
       await interaction.reply({ content: "⛔ Painel restrito à administração.", ephemeral: true }).catch(() => undefined);
       return;
     }
@@ -1665,7 +1670,7 @@ async function handleInteraction(interaction: Interaction) {
       return;
     }
     const section: AdminSection = rawSection === "roblox" || rawSection === "logs" || rawSection === "tickets" || rawSection === "security" ? rawSection : "home";
-    await interaction.update(await buildAdminPanel(client, interaction.guild, section, shield.panelState()));
+    await interaction.update(await buildAdminPanel(client, guild, section, shield.panelState()));
     return;
   }
 
