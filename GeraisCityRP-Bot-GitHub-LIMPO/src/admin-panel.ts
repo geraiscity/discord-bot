@@ -174,7 +174,18 @@ export async function buildAdminPanel(
       .addFields(
         { name: "gerais-logs", value: process.env.GERAIS_LOG_CHANNEL_ID ? `<#${process.env.GERAIS_LOG_CHANNEL_ID}>` : "Não configurado", inline: true },
         { name: "security-alerts", value: process.env.SECURITY_ALERT_CHANNEL_ID ? `<#${process.env.SECURITY_ALERT_CHANNEL_ID}>` : process.env.SECURITY_LOG_CHANNEL_ID ? `<#${process.env.SECURITY_LOG_CHANNEL_ID}>` : "Não configurado", inline: true },
-        { name: "transcripts", value: process.env.TRANSCRIPT_CHANNEL_ID ? `<#${process.env.TRANSCRIPT_CHANNEL_ID}>` : process.env.TICKET_LOG_CHANNEL_ID ? `<#${process.env.TICKET_LOG_CHANNEL_ID}>` : "Não configurado", inline: true },
+        {
+          name: "Transcripts por categoria",
+          value: [
+            "Bugs: " + (config.ticketLogChannelIds.bugs ? `<#${config.ticketLogChannelIds.bugs}>` : "—"),
+            "Dúvidas: " + (config.ticketLogChannelIds.suporte ? `<#${config.ticketLogChannelIds.suporte}>` : "—"),
+            "Denúncias: " + (config.ticketLogChannelIds.denuncias ? `<#${config.ticketLogChannelIds.denuncias}>` : "—"),
+            "Compras: " + (config.ticketLogChannelIds.compras ? `<#${config.ticketLogChannelIds.compras}>` : "—"),
+            "Parcerias: " + (config.ticketLogChannelIds.parcerias ? `<#${config.ticketLogChannelIds.parcerias}>` : "—"),
+          ].join("\n"),
+          inline: false,
+        },
+        { name: "Avaliações", value: config.ticketRatingsChannelId ? `<#${config.ticketRatingsChannelId}>` : "Não configurado", inline: true },
       )
       .setTimestamp();
     return { embeds: [embed], components: navigation(section) };
