@@ -1367,7 +1367,7 @@ async function handleInteraction(interaction: Interaction) {
     return;
   }
 
-  if (interaction.customId === "ticket_category:compras") {
+  if (interaction.customId === "ticket_category:compras" || interaction.customId === "ticket_open:compras") {
     await interaction.showModal(purchaseTicketModal());
     return;
   }
@@ -1514,7 +1514,7 @@ async function handleInteraction(interaction: Interaction) {
     ephemeral: !interaction.customId.startsWith("denuncia_provas:"),
   });
 
-  if (interaction.customId.startsWith("ticket_category:")) {
+  if (interaction.customId.startsWith("ticket_category:") || interaction.customId.startsWith("ticket_open:")) {
     const type = interaction.customId.split(":")[1] as TicketType;
     if (ticketTypes.some((ticket) => ticket.id === type)) {
       const key = `${interaction.guildId ?? "dm"}:${interaction.user.id}:${type}`;
