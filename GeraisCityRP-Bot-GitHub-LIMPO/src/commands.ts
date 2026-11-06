@@ -6,41 +6,34 @@ import {
 
 export const commandDefinitions = [
   new SlashCommandBuilder()
-    .setName("ticket")
-    .setDescription("Gerencia o ticket atual.")
-    .addSubcommand((sub) =>
-      sub
-        .setName("adicionar")
-        .setDescription("Adiciona uma pessoa ao ticket.")
-        .addUserOption((option) => option.setName("usuario").setDescription("Pessoa que poderá visualizar o ticket").setRequired(true)),
+    .setName("painel")
+    .setDescription("Publica os painéis oficiais do servidor.")
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("ticket")
+        .setDescription("Publica a central de atendimento com orientações e botão para abrir ticket.")
+        .addChannelOption((option) =>
+          option
+            .setName("canal")
+            .setDescription("Canal onde o painel será publicado. Se vazio, usa o canal atual.")
+            .addChannelTypes(ChannelType.GuildText)
+            .setRequired(false),
+        ),
     )
-    .addSubcommand((sub) =>
-      sub
-        .setName("remover")
-        .setDescription("Remove uma pessoa adicionada do ticket.")
-        .addUserOption((option) => option.setName("usuario").setDescription("Pessoa que perderá acesso").setRequired(true)),
-    )
-    .addSubcommand((sub) => sub.setName("assumir").setDescription("Assume o atendimento como membro da equipe."))
-    .addSubcommand((sub) =>
-      sub
-        .setName("renomear")
-        .setDescription("Renomeia o canal do ticket.")
-        .addStringOption((option) => option.setName("nome").setDescription("Novo nome").setMinLength(2).setMaxLength(70).setRequired(true)),
-    )
-    .addSubcommand((sub) => sub.setName("fechar").setDescription("Solicita o fechamento do ticket."))
-    .addSubcommand((sub) => sub.setName("info").setDescription("Mostra titular, pessoas adicionadas e atendente.")),
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels.toString()),
 
   new SlashCommandBuilder()
-    .setName("painel-tickets")
-    .setDescription("Publica o painel para abertura de tickets.")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels.toString())
-    .addChannelOption((option) => option.setName("canal").setDescription("Canal onde o painel será publicado.").addChannelTypes(ChannelType.GuildText).setRequired(true))
-    .addStringOption((option) => option.setName("titulo").setDescription("Título do embed.").setRequired(false))
-    .addStringOption((option) => option.setName("descricao").setDescription("Descrição do embed.").setRequired(false))
-    .addStringOption((option) => option.setName("cor").setDescription("Cor hexadecimal, por exemplo #FFD700.").setRequired(false))
-    .addAttachmentOption((option) => option.setName("imagem").setDescription("Banner/imagem grande do painel.").setRequired(false))
-    .addAttachmentOption((option) => option.setName("thumbnail").setDescription("Imagem pequena no canto do painel.").setRequired(false))
-    .addStringOption((option) => option.setName("imagem_rodape").setDescription("URL antiga de imagem (opcional; prefira upload em imagem).").setRequired(false)),
+    .setName("avaliacao")
+    .setDescription("Gerencia os perfis públicos de avaliação da equipe.")
+    .addSubcommand((subcommand) =>
+      subcommand
+        .setName("perfil")
+        .setDescription("Publica um perfil de avaliação para um atendente no canal atual.")
+        .addUserOption((option) =>
+          option.setName("atendente").setDescription("Membro da equipe que receberá avaliações.").setRequired(true),
+        ),
+    )
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()),
 
   new SlashCommandBuilder()
     .setName("painel-admin")
