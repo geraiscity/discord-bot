@@ -492,6 +492,20 @@ async function repairTicketPermissions(
   });
   await channel.permissionOverwrites.edit(channel.client.user.id, ticketBotAccess);
   await channel.permissionOverwrites.edit(userId, ticketMemberAccess);
+
+  // Remove permissões explícitas de cargos antigos: o acesso operacional fica
+  // concentrado somente no cargo unificado configurado para tickets.
+  const staleRoleIds = channel.permissionOverwrites.cache
+    .filter((overwrite) =>
+      guild.roles.cache.has(overwrite.id) &&
+      overwrite.id !== guild.roles.everyone.id &&
+      !staffRoleIds.includes(overwrite.id),
+    )
+    .map((overwrite) => overwrite.id);
+  await Promise.all(staleRoleIds.map((roleId) =>
+    channel.permissionOverwrites.delete(roleId, "Gerais Tickets: unificação das permissões da equipe").catch(() => undefined),
+  ));
+
   await Promise.all(
     staffRoleIds.map((roleId) =>
       channel.permissionOverwrites.edit(roleId, {
@@ -499,6 +513,10 @@ async function repairTicketPermissions(
         SendMessages: true,
         ReadMessageHistory: true,
         EmbedLinks: true,
+        ManageChannels: false,
+        ManageRoles: false,
+        ManageWebhooks: false,
+        ManageMessages: false,
       }),
     ),
   );
@@ -832,6 +850,12 @@ async function createTicket(
         PermissionFlagsBits.SendMessages,
         PermissionFlagsBits.ReadMessageHistory,
         PermissionFlagsBits.EmbedLinks,
+      ],
+      deny: [
+        PermissionFlagsBits.ManageChannels,
+        PermissionFlagsBits.ManageRoles,
+        PermissionFlagsBits.ManageWebhooks,
+        PermissionFlagsBits.ManageMessages,
       ],
     });
   }
@@ -1447,15 +1471,16 @@ async function handleInteraction(interaction: Interaction) {
       await interaction.editReply("Este modal só pode ser usado dentro de um ticket válido.");
       return;
     }
+    if (action !== "add") {
+      await interaction.editReply("A remoção de pessoas não está disponível neste painel.");
+      return;
+    }
     const userId = parseUserReference(interaction.fields.getTextInputValue("usuario"));
     if (!userId) {
       await interaction.editReply("Informe um ID numérico válido ou uma menção de usuário.");
       return;
     }
-    const result = action === "add"
-      ? await addTicketMember(channel, interaction.user.id, userId)
-      : await removeTicketMember(channel, interaction.user.id, userId);
-    await interaction.editReply(result);
+    await interaction.editReply(await addTicketMember(channel, interaction.user.id, userId));
     return;
   }
 
