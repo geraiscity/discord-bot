@@ -617,19 +617,19 @@ async function privateGeneralLogChannel(guild: NonNullable<Interaction["guild"]>
   return channel;
 }
 
-async function sendTicketLog(guild: NonNullable<Interaction["guild"]>, options: MessageCreateOptions): Promise<boolean> {
-  const log = await privateTicketLogChannel(guild);
-  if (log && await log.send(options).then(() => true).catch(() => false)) return true;
-  if (securityEnvironment.ownerId) {
-    const owner = await client.users.fetch(securityEnvironment.ownerId).catch(() => null);
-    if (owner && await owner.send(options).then(() => true).catch(() => false)) return true;
-  }
-  return false;
-}
-
 async function sendGeneralLog(guild: NonNullable<Interaction["guild"]>, options: MessageCreateOptions): Promise<boolean> {
   const log = await privateGeneralLogChannel(guild);
   return log ? log.send(options).then(() => true).catch(() => false) : false;
+}
+
+async function privateRatingsLogChannel(guild: NonNullable<Interaction["guild"]>): Promise<TextChannel | null> {
+  const id = config.ticketRatingsChannelId;
+  if (!id) return null;
+  const channel = await guild.channels.fetch(id).catch(() => null);
+  if (channel?.type !== ChannelType.GuildText) return null;
+  const everyonePermissions = channel.permissionsFor(guild.roles.everyone);
+  if (!everyonePermissions || everyonePermissions.has(PermissionFlagsBits.ViewChannel)) return null;
+  return channel;
 }
 
 async function claimTicket(channel: TextChannel, userId: string): Promise<string> {
@@ -1601,37 +1601,18 @@ async function handleInteraction(interaction: Interaction) {
     return;
   }
 
-  if (interaction.customId === "ticket_add" || interaction.customId === "ticket_remove") {
+  if (interaction.customId === "ticket_add") {
     const channel = await fetchInteractionTextChannel(interaction);
     if (!channel || channel.type !== ChannelType.GuildText) {
       await interaction.reply({ content: "Este botão só funciona dentro de um ticket.", ephemeral: true });
       return;
     }
     const meta = ticketMetaFromChannel(channel);
-    if (!meta || !canManageTicketMembers(channel.guild, interaction.user.id, meta)) {
+    if (!meta || !(await canManageTicketMembers(channel.guild, interaction.user.id))) {
       await interaction.reply({ content: "Somente a equipe autorizada pode gerenciar pessoas deste ticket.", ephemeral: true });
       return;
     }
     await interaction.showModal(memberModal(interaction.customId === "ticket_add" ? "add" : "remove"));
-    return;
-  }
-
-  if (interaction.customId.startsWith("ticket_rate:")) {
-    const [, guildId, ticketId, rating] = interaction.customId.split(":");
-    const guild = guildId ? client.guilds.cache.get(guildId) : null;
-    if (guild && ticketId && rating) {
-      const numericRating = Number(rating);
-      if (Number.isInteger(numericRating) && numericRating >= 1 && numericRating <= 5) {
-        void recordTicketRating({ guildId: guild.id, ticketId, userId: interaction.user.id, rating: numericRating });
-      }
-      await sendGeneralLog(guild, {
-        embeds: [new EmbedBuilder().setColor(0xfee75c).setTitle("⭐ Avaliação de atendimento").setDescription(`<@${interaction.user.id}> avaliou o ticket \`${ticketId}\` com **${rating}/5**.`).setTimestamp()],
-        allowedMentions: { parse: [] },
-      });
-    }
-    await interaction.reply({ content: "Obrigado pela avaliação! ❤️", ephemeral: true }).catch(async () => {
-      await interaction.reply({ content: "Obrigado pela avaliação! ❤️" }).catch(() => undefined);
-    });
     return;
   }
 
@@ -1668,8 +1649,8 @@ async function handleInteraction(interaction: Interaction) {
       return;
     }
     const meta = ticketMetaFromChannel(channel);
-    if (!meta || (interaction.user.id !== meta.ownerId && !isTicketStaff(channel.guild, interaction.user.id))) {
-      await interaction.editReply("Somente o titular ou a equipe pode fechar este ticket.");
+    if (!meta || !(await isTicketStaff(channel.guild, interaction.user.id))) {
+      await interaction.editReply("Somente membros com o cargo 🇧🇷「Equipe STAFF TCMG」 podem fechar tickets.");
       return;
     }
     await interaction.editReply({ content: "Tem certeza? O transcript será salvo antes de remover o canal.", components: [ticketCloseConfirmButtons()] });
