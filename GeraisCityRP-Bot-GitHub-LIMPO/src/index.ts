@@ -556,11 +556,18 @@ async function canManageTicketMembers(guild: NonNullable<Interaction["guild"]>, 
   return isTicketStaff(guild, userId);
 }
 
-function canUseAdminPanel(interaction: ChatInputCommandInteraction | ButtonInteraction): boolean {
-  if (!interaction.guild) return false;
-  if (shield.isOwner(interaction.user.id) || interaction.guild.ownerId === interaction.user.id) return true;
-  if (interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) return true;
-  return false;
+async function canUseAdminPanel(interaction: ChatInputCommandInteraction | ButtonInteraction): Promise<boolean> {
+  const guild = interaction.guild;
+  if (!guild) return false;
+  if (shield.isOwner(interaction.user.id) || guild.ownerId === interaction.user.id) return true;
+
+  // O cargo unificado de tickets não concede acesso ao painel administrativo,
+  // mesmo que algum cargo adicional do membro possua permissões de gestão.
+  const member = await guild.members.fetch(interaction.user.id).catch(() => null);
+  const ticketStaff = new Set(ticketStaffRoleIds(guild));
+  if (member?.roles.cache.some((role) => ticketStaff.has(role.id))) return false;
+
+  return Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild));
 }
 
 function parseUserReference(value: string): string | null {
@@ -1135,7 +1142,7 @@ async function handleInteraction(interaction: Interaction) {
     }
 
     if (interaction.commandName === "painel-admin") {
-      if (!interaction.guild || !canUseAdminPanel(interaction)) {
+      if (!interaction.guild || !(await canUseAdminPanel(interaction))) {
         await respond(interaction, { content: "⛔ Este painel é exclusivo da administração autorizada.", ephemeral: true });
         return;
       }
