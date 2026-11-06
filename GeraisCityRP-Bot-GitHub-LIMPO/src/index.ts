@@ -1551,7 +1551,7 @@ async function handleInteraction(interaction: Interaction) {
   }
 
   if (interaction.customId.startsWith("admin_security:")) {
-    if (!interaction.guild || !canUseAdminPanel(interaction)) {
+    if (!interaction.guild || !(await canUseAdminPanel(interaction))) {
       await interaction.reply({ content: "⛔ Painel restrito à administração.", ephemeral: true }).catch(() => undefined);
       return;
     }
@@ -1640,7 +1640,7 @@ async function handleInteraction(interaction: Interaction) {
   }
 
   if (interaction.customId.startsWith("admin_panel:")) {
-    if (!interaction.guild || !canUseAdminPanel(interaction)) {
+    if (!interaction.guild || !(await canUseAdminPanel(interaction))) {
       await interaction.reply({ content: "⛔ Painel restrito à administração.", ephemeral: true }).catch(() => undefined);
       return;
     }
