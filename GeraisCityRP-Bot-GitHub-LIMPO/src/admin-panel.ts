@@ -190,7 +190,7 @@ export async function buildAdminPanel(
         { name: "Compras", value: String(tickets.purchases), inline: true },
         { name: "Transcripts", value: process.env.TRANSCRIPT_CHANNEL_ID ? `<#${process.env.TRANSCRIPT_CHANNEL_ID}>` : process.env.TICKET_LOG_CHANNEL_ID ? `<#${process.env.TICKET_LOG_CHANNEL_ID}>` : "Canal não configurado", inline: false },
       )
-      .setDescription("Use `/painel-tickets` para publicar o painel visual. A categoria **Compras** já faz parte da central.")
+      .setDescription("Use `/painel ticket` para publicar o painel visual. A categoria **Compras** já faz parte da central.")
       .setTimestamp();
     return { embeds: [embed], components: navigation(section) };
   }
