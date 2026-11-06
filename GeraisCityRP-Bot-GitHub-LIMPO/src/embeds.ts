@@ -11,7 +11,10 @@ export function buildTicketPanelEmbed(options: {
   const embed = new EmbedBuilder()
     .setTitle(options.title || config.defaults.panelTitle)
     .setDescription(
-      options.description || config.defaults.panelDescription,
+      `${options.description || config.defaults.panelDescription}
+
+**Como abrir seu atendimento**
+Clique em **ABRIR TICKET** e selecione a categoria que corresponde ao que você precisa. Nossa equipe atenderá você assim que possível.`,
     )
     .setColor(options.color)
     .setFooter({ text: "Atendimento da comunidade" });
