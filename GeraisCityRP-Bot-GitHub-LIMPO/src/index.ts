@@ -1388,6 +1388,30 @@ async function handleInteraction(interaction: Interaction) {
     return;
   }
 
+  if (interaction.customId === "ticket_panel_open") {
+    await interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(0xed4245)
+          .setTitle("🎫 Selecione uma categoria")
+          .setDescription("Escolha abaixo o assunto do seu atendimento. O canal será criado de forma privada."),
+      ],
+      components: ticketCategoryButtons(),
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (interaction.customId.startsWith("staff_rating_open:")) {
+    const state = staffRatingStateFromMessage(interaction.message);
+    if (!state) {
+      await interaction.reply({ content: "Este perfil de avaliação está inválido ou desatualizado.", ephemeral: true });
+      return;
+    }
+    await interaction.showModal(staffRatingModal(state.staffId, interaction.message.id));
+    return;
+  }
+
   if (interaction.customId === "ticket_open:compras") {
     await interaction.showModal(purchaseTicketModal());
     return;
