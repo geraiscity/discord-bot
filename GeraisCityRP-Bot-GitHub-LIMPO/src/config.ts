@@ -43,8 +43,21 @@ export const config = {
     optionalEnv("MODERATION_ROLE_IDS") ?? optionalEnv("MODERATION_ROLE_ID"),
   ),
   moderationRoleNames: parseList(optionalEnv("MODERATION_ROLE_NAMES")),
-  ticketCategoryId: optionalEnv("TICKET_CATEGORY_ID"),
+  // Cargo unificado que recebe somente permissões operacionais de tickets.
+  ticketStaffRoleNames: parseList(
+    optionalEnv("TICKET_STAFF_ROLE_NAMES") ?? "🇧🇷「Equipe STAFF TCMG」",
+  ),
+  ticketCategoryId: optionalEnv("TICKET_CATEGORY_ID") ?? "1549446432317251584",
   ticketCategoryName: optionalEnv("TICKET_CATEGORY_NAME"),
+  ticketLogChannelIds: {
+    bugs: optionalEnv("TICKET_LOG_BUGS_CHANNEL_ID") ?? "1549446571605758063",
+    suporte: optionalEnv("TICKET_LOG_SUPORTE_CHANNEL_ID") ?? "1549446560637657201",
+    denuncias: optionalEnv("TICKET_LOG_DENUNCIAS_CHANNEL_ID") ?? "1549446567650664459",
+    compras: optionalEnv("TICKET_LOG_COMPRAS_CHANNEL_ID") ?? "1549446564043301054",
+    parcerias: optionalEnv("TICKET_LOG_PARCERIAS_CHANNEL_ID"),
+  },
+  ticketRatingsChannelId:
+    optionalEnv("TICKET_RATINGS_CHANNEL_ID") ?? "1568055822607712369",
   rules: optionalEnv("TICKET_RULES")?.split(/\r?\n/).filter(Boolean) ?? DEFAULT_RULES,
   defaults: {
     panelTitle: optionalEnv("TICKET_PANEL_TITLE") ?? "Central de Atendimento",
