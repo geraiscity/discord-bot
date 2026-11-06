@@ -244,11 +244,18 @@ function ticketCategoryButtons(): ActionRowBuilder<ButtonBuilder>[] {
     compras: ButtonStyle.Success,
     parcerias: ButtonStyle.Primary,
   };
+  const colorDotByType: Record<TicketType, string> = {
+    bugs: "🟣",
+    suporte: "🔵",
+    denuncias: "🔴",
+    compras: "🟢",
+    parcerias: "🟡",
+  };
   const buildButton = (ticket: (typeof ticketTypes)[number]) =>
     new ButtonBuilder()
       .setCustomId(`ticket_open:${ticket.id}`)
-      .setLabel(ticket.label)
-      .setEmoji(ticket.emoji)
+      .setLabel(ticket.emoji + " " + ticket.label)
+      .setEmoji(colorDotByType[ticket.id])
       .setStyle(styleByType[ticket.id]);
 
   return [
@@ -772,6 +779,13 @@ async function createTicket(
   }
 
   const staffRoleIds = ticketStaffRoleIds(interaction.guild);
+  if (!staffRoleIds.length) {
+    await respond(interaction, {
+      content: "Não encontrei o cargo **🇧🇷「Equipe STAFF TCMG」**. Confira se o nome está exatamente igual ao cargo do servidor.",
+      ephemeral: true,
+    });
+    return;
+  }
   const existing = existingTicket(interaction.guild.id, interaction.user.id, type);
   if (existing) {
     await repairTicketPermissions(
@@ -1103,6 +1117,15 @@ async function handleInteraction(interaction: Interaction) {
         return;
       }
       if (!(await ensureChannelAccess(interaction, targetChannel))) return;
+      const recentMessages = await targetChannel.messages.fetch({ limit: 100 }).catch(() => null);
+      const existingProfile = recentMessages?.find((message) => {
+        const state = staffRatingStateFromMessage(message);
+        return message.author.id === client.user?.id && state?.staffId === staffMember.id;
+      });
+      if (existingProfile) {
+        await respond(interaction, { content: `Esse atendente já possui um perfil neste canal: https://discord.com/channels/${interaction.guild.id}/${targetChannel.id}/${existingProfile.id}`, ephemeral: true });
+        return;
+      }
       await targetChannel.send({
         embeds: [staffRatingProfileEmbed(staffMember.id, staffMember.displayName, staffMember.displayAvatarURL({ size: 256 }), 0, 0)],
         components: [staffRatingButtons(staffMember.id)],
@@ -1621,6 +1644,11 @@ async function handleInteraction(interaction: Interaction) {
     }
     const section: AdminSection = rawSection === "roblox" || rawSection === "logs" || rawSection === "tickets" || rawSection === "security" ? rawSection : "home";
     await interaction.update(await buildAdminPanel(client, interaction.guild, section, shield.panelState()));
+    return;
+  }
+
+  if (interaction.customId === "ticket_remove") {
+    await interaction.reply({ content: "A remoção de pessoas foi desativada. A equipe pode assumir, adicionar pessoas e fechar tickets.", ephemeral: true });
     return;
   }
 
