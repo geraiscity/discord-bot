@@ -1215,6 +1215,86 @@ async function handleInteraction(interaction: Interaction) {
   }
 
   if (interaction.isModalSubmit()) {
+    if (interaction.customId.startsWith("staff_rating_submit:")) {
+      await interaction.deferReply({ ephemeral: true });
+      const guild = interaction.guild;
+      if (!guild || !interaction.channelId) {
+        await interaction.editReply("A avaliação só pode ser enviada dentro do servidor.");
+        return;
+      }
+      const parts = interaction.customId.split(":");
+      const staffId = parts[1];
+      const profileMessageId = parts[2];
+      const mentionedStaffId = parseUserReference(interaction.fields.getTextInputValue("atendente"));
+      const rating = Number(interaction.fields.getTextInputValue("nota").trim());
+      const observation = interaction.fields.getTextInputValue("observacao").trim();
+      if (!staffId || !profileMessageId || mentionedStaffId !== staffId) {
+        await interaction.editReply("A menção informada não corresponde ao atendente deste perfil.");
+        return;
+      }
+      if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+        await interaction.editReply("A nota precisa ser um número inteiro de 1 a 5.");
+        return;
+      }
+      if (!observation) {
+        await interaction.editReply("Escreva uma observação sobre o atendimento.");
+        return;
+      }
+      const targetChannel = await guild.channels.fetch(interaction.channelId).catch(() => null);
+      if (targetChannel?.type !== ChannelType.GuildText) {
+        await interaction.editReply("Não consegui localizar o canal do perfil.");
+        return;
+      }
+      const ratingsLog = await privateRatingsLogChannel(guild);
+      if (!ratingsLog) {
+        await interaction.editReply("O canal privado de avaliações não foi encontrado ou está visível para @everyone. Confira as permissões do canal configurado.");
+        return;
+      }
+      try {
+        const lockKey = guild.id + ":" + targetChannel.id + ":" + profileMessageId;
+        const updated = await withStaffRatingLock(lockKey, async () => {
+          const profileMessage = await targetChannel.messages.fetch(profileMessageId).catch(() => null);
+          if (!profileMessage || profileMessage.author.id !== client.user?.id) {
+            throw new Error("Não encontrei a mensagem original do perfil de avaliação.");
+          }
+          const state = staffRatingStateFromMessage(profileMessage);
+          if (!state || state.staffId !== staffId) {
+            throw new Error("O perfil foi alterado ou não corresponde ao atendente selecionado.");
+          }
+          const staffMember = await guild.members.fetch(staffId).catch(() => null);
+          if (!staffMember) throw new Error("Esse atendente não está mais no servidor.");
+          const nextCount = state.count + 1;
+          const nextSum = state.sum + rating;
+          await ratingsLog.send({
+            embeds: [
+              new EmbedBuilder()
+                .setColor(0xfee75c)
+                .setAuthor({ name: "GERAIS CITY RP • REGISTRO DE AVALIAÇÃO" })
+                .setTitle("⭐ Nova avaliação recebida")
+                .addFields(
+                  { name: "Avaliador", value: "<@" + interaction.user.id + ">", inline: true },
+                  { name: "Atendente", value: "<@" + staffId + ">", inline: true },
+                  { name: "Nota", value: rating + "/5 ⭐", inline: true },
+                  { name: "Observação", value: observation.slice(0, 1000), inline: false },
+                  { name: "Perfil", value: "[Abrir perfil](https://discord.com/channels/" + guild.id + "/" + targetChannel.id + "/" + profileMessage.id + ")", inline: false },
+                )
+                .setFooter({ text: "Avaliador ID: " + interaction.user.id + " • Avaliações sem limite" })
+                .setTimestamp(),
+            ],
+            allowedMentions: { parse: [] },
+          });
+          await profileMessage.edit({
+            embeds: [staffRatingProfileEmbed(staffMember.id, staffMember.displayName, staffMember.displayAvatarURL({ size: 256 }), nextCount, nextSum)],
+            components: [staffRatingButtons(staffMember.id, nextCount, nextSum)],
+          });
+          return { count: nextCount, average: nextSum / nextCount };
+        });
+        await interaction.editReply("✅ Avaliação registrada! O perfil agora possui " + updated.count + " avaliações e média " + updated.average.toFixed(2).replace(".", ",") + "/5. Você pode avaliar novamente quando quiser.");
+      } catch (error) {
+        await interaction.editReply(error instanceof Error ? error.message : "Não foi possível registrar sua avaliação.");
+      }
+      return;
+    }
     if (interaction.customId === "announcement_media_modal") {
       await interaction.deferReply({ ephemeral: true });
       if (!interaction.guild) {
