@@ -544,12 +544,15 @@ function ticketMetaFromChannel(channel: TextChannel): TicketMeta | null {
   return parseTicketTopic(channel.topic);
 }
 
-async function isTicketStaff(guild: NonNullable<Interaction["guild"]>, userId: string): Promise<boolean> {
-  if (shield.isOwner(userId) || guild.ownerId === userId) return true;
+async function hasTicketStaffRole(guild: NonNullable<Interaction["guild"]>, userId: string): Promise<boolean> {
   const member = await guild.members.fetch(userId).catch(() => null);
   if (!member) return false;
   const staff = new Set(ticketStaffRoleIds(guild));
   return member.roles.cache.some((role) => staff.has(role.id));
+}
+
+async function isTicketStaff(guild: NonNullable<Interaction["guild"]>, userId: string): Promise<boolean> {
+  return shield.isOwner(userId) || guild.ownerId === userId || hasTicketStaffRole(guild, userId);
 }
 
 async function canManageTicketMembers(guild: NonNullable<Interaction["guild"]>, userId: string): Promise<boolean> {
@@ -563,10 +566,7 @@ async function canUseAdminPanel(interaction: ChatInputCommandInteraction | Butto
 
   // O cargo unificado de tickets não concede acesso ao painel administrativo,
   // mesmo que algum cargo adicional do membro possua permissões de gestão.
-  const member = await guild.members.fetch(interaction.user.id).catch(() => null);
-  const ticketStaff = new Set(ticketStaffRoleIds(guild));
-  if (member?.roles.cache.some((role) => ticketStaff.has(role.id))) return false;
-
+  if (await hasTicketStaffRole(guild, interaction.user.id)) return false;
   return Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild));
 }
 
@@ -1035,6 +1035,23 @@ function roleIdsFromPanelMessage(message: Message): string[] {
 
 async function handleInteraction(interaction: Interaction) {
   if (interaction.isChatInputCommand()) {
+    const ownerOverride = Boolean(interaction.guild && (
+      shield.isOwner(interaction.user.id) || interaction.guild.ownerId === interaction.user.id
+    ));
+    const staffRestrictedCommands = new Set(["painel", "avaliacao", "painel-admin", "reaction-role", "anunciar", "divulgar"]);
+    if (
+      interaction.guild &&
+      !ownerOverride &&
+      staffRestrictedCommands.has(interaction.commandName) &&
+      await hasTicketStaffRole(interaction.guild, interaction.user.id)
+    ) {
+      await interaction.reply({
+        content: "Este cargo é operacional: ele permite somente assumir tickets, adicionar pessoas e fechar atendimentos.",
+        ephemeral: true,
+      });
+      return;
+    }
+
     // Nunca usar permissões do Discord como substituto para a conferência do ID.
     if (shield.shouldRestrictCommand(interaction.commandName) && !shield.isOwner(interaction.user.id)) {
       await interaction.reply({
