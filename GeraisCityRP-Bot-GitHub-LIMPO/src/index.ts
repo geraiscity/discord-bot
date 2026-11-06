@@ -1035,124 +1035,57 @@ async function handleInteraction(interaction: Interaction) {
 
     await interaction.deferReply({ ephemeral: true });
 
-    if (interaction.commandName === "ticket") {
-      const channel = await fetchInteractionTextChannel(interaction);
-      if (!channel || channel.type !== ChannelType.GuildText) {
-        await respond(interaction, { content: "Use este comando dentro de um canal de ticket.", ephemeral: true });
+    if (interaction.commandName === "painel") {
+      if (!interaction.guild) {
+        await respond(interaction, { content: "Este comando só pode ser usado dentro do servidor.", ephemeral: true });
         return;
       }
-      const meta = ticketMetaFromChannel(channel);
-      if (!meta) {
-        await respond(interaction, { content: "Este canal não é um ticket reconhecido pelo sistema final.", ephemeral: true });
+      const subcommand = interaction.options.getSubcommand(true);
+      if (subcommand !== "ticket") {
+        await respond(interaction, { content: "Subcomando de painel desconhecido.", ephemeral: true });
         return;
       }
-      const sub = interaction.options.getSubcommand(true);
-      if (sub === "assumir") {
-        await respond(interaction, { content: await claimTicket(channel, interaction.user.id), ephemeral: true });
+      const selectedChannel = interaction.options.getChannel("canal");
+      const targetChannel = selectedChannel
+        ? await interaction.guild.channels.fetch(selectedChannel.id).catch(() => null)
+        : await fetchInteractionTextChannel(interaction);
+      if (!targetChannel || targetChannel.type !== ChannelType.GuildText) {
+        await respond(interaction, { content: "Escolha um canal de texto válido ou execute /painel ticket dentro do canal desejado.", ephemeral: true });
         return;
       }
-      if (sub === "adicionar" || sub === "remover") {
-        const user = interaction.options.getUser("usuario", true);
-        const result = sub === "adicionar"
-          ? await addTicketMember(channel, interaction.user.id, user.id)
-          : await removeTicketMember(channel, interaction.user.id, user.id);
-        await respond(interaction, { content: result, ephemeral: true });
-        return;
-      }
-      if (sub === "renomear") {
-        if (!isTicketStaff(channel.guild, interaction.user.id)) {
-          await respond(interaction, { content: "Apenas a equipe pode renomear tickets.", ephemeral: true });
-          return;
-        }
-        const name = interaction.options.getString("nome", true).toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 70);
-        if (name.length < 2) {
-          await respond(interaction, { content: "Escolha um nome válido para o canal.", ephemeral: true });
-          return;
-        }
-        await channel.setName(name, `Ticket Final renomeado por ${interaction.user.id}`);
-        void recordTicketEvent({ guildId: channel.guild.id, channelId: channel.id, ownerId: meta.ownerId, actorId: interaction.user.id, action: "rename", payload: { name } });
-        await respond(interaction, { content: `Canal renomeado para **${name}**.`, ephemeral: true });
-        return;
-      }
-      if (sub === "fechar") {
-        if (interaction.user.id !== meta.ownerId && !isTicketStaff(channel.guild, interaction.user.id)) {
-          await respond(interaction, { content: "Somente o titular ou a equipe pode fechar este ticket.", ephemeral: true });
-          return;
-        }
-        await respond(interaction, { content: "Tem certeza que deseja encerrar este atendimento? O transcript será salvo antes da exclusão.", components: [ticketCloseConfirmButtons()], ephemeral: true });
-        return;
-      }
-      if (sub === "info") {
-        await respond(interaction, { embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle("🎫 Informações do ticket").addFields(
-          { name: "Titular", value: `<@${meta.ownerId}>`, inline: true },
-          { name: "Atendente", value: meta.claimedBy ? `<@${meta.claimedBy}>` : "Ainda não assumido", inline: true },
-          { name: "Pessoas adicionadas", value: meta.addedUserIds.length ? meta.addedUserIds.map((id) => `<@${id}>`).join(", ") : "Nenhuma", inline: false },
-        )], ephemeral: true });
-        return;
-      }
+      if (!(await ensureChannelAccess(interaction, targetChannel))) return;
+      await targetChannel.send({ embeds: [buildTicketPanelEmbed()], components: [ticketPanelOpenButton()] });
+      await respond(interaction, { content: `Central de atendimento publicada em <#${targetChannel.id}>.`, ephemeral: true });
+      return;
     }
 
-    if (interaction.commandName === "painel-tickets") {
-      const selectedChannel = interaction.options.getChannel("canal", true);
-      const targetChannel = await interaction.guild?.channels
-        .fetch(selectedChannel.id)
-        .catch(() => null);
-      if (!targetChannel || !("send" in targetChannel)) {
-        await respond(interaction, {
-          content:
-            "Não consegui acessar o canal escolhido. Verifique se o bot tem Ver Canal e Enviar Mensagens nele.",
-          ephemeral: true,
-        });
+    if (interaction.commandName === "avaliacao") {
+      if (!interaction.guild || !(shield.isOwner(interaction.user.id) || interaction.guild.ownerId === interaction.user.id)) {
+        await respond(interaction, { content: "⛔ Somente o proprietário do Gerais City RP pode publicar perfis de avaliação.", ephemeral: true });
         return;
       }
-      if (!(await ensureChannelAccess(interaction, targetChannel))) {
+      const subcommand = interaction.options.getSubcommand(true);
+      if (subcommand !== "perfil") {
+        await respond(interaction, { content: "Subcomando de avaliação desconhecido.", ephemeral: true });
         return;
       }
-
-      const panelImage = interaction.options.getAttachment("imagem");
-      const panelThumbnail = interaction.options.getAttachment("thumbnail");
-      const panelAttachments = [panelImage, panelThumbnail].filter((item): item is NonNullable<typeof item> => Boolean(item));
-      if (panelAttachments.some((image) => !isAcceptedImage(image.name, image.contentType) || image.size > MAX_ANNOUNCEMENT_IMAGE_BYTES)) {
-        await respond(interaction, { content: "Imagem e thumbnail precisam ser PNG/JPG/GIF/WebP e ter no máximo 8 MB cada.", ephemeral: true });
+      const staffUser = interaction.options.getUser("atendente", true);
+      const staffMember = await interaction.guild.members.fetch(staffUser.id).catch(() => null);
+      if (!staffMember) {
+        await respond(interaction, { content: "Não encontrei esse atendente no servidor.", ephemeral: true });
         return;
       }
-      const files: AttachmentBuilder[] = [];
-      let panelImageUrl: string | null = null;
-      let panelThumbnailUrl: string | null = null;
-      try {
-        for (const image of panelAttachments) {
-          const response = await fetch(image.url, { signal: AbortSignal.timeout(12_000) });
-          if (!response.ok) throw new Error(`Não foi possível obter ${image.name}.`);
-          const bytes = Buffer.from(await response.arrayBuffer());
-          if (bytes.byteLength > MAX_ANNOUNCEMENT_IMAGE_BYTES) throw new Error(`${image.name} ultrapassou 8 MB.`);
-          const baseName = announcementImageName(image.name, false);
-          const name = image.id === panelThumbnail?.id ? `thumb_${baseName}` : `banner_${baseName}`;
-          files.push(new AttachmentBuilder(bytes, { name }));
-          if (image.id === panelThumbnail?.id) panelThumbnailUrl = `attachment://${name}`;
-          else panelImageUrl = `attachment://${name}`;
-        }
-      } catch (error) {
-        await respond(interaction, { content: error instanceof Error ? error.message : "Não consegui preparar a imagem do painel.", ephemeral: true });
+      const targetChannel = await fetchInteractionTextChannel(interaction);
+      if (!targetChannel) {
+        await respond(interaction, { content: "Execute /avaliacao perfil no canal onde deseja publicar o perfil.", ephemeral: true });
         return;
       }
-
+      if (!(await ensureChannelAccess(interaction, targetChannel))) return;
       await targetChannel.send({
-        embeds: [
-          buildTicketPanelEmbed({
-            title: interaction.options.getString("titulo"),
-            description: interaction.options.getString("descricao"),
-            color: colorFromOption(interaction.options.getString("cor") ?? "FFD700"),
-            footerImage: panelImageUrl ?? interaction.options.getString("imagem_rodape"),
-            thumbnail: panelThumbnailUrl,
-          }),
-        ],
-        files,
-        components: [ticketPanelButtons()],
+        embeds: [staffRatingProfileEmbed(staffMember.id, staffMember.displayName, staffMember.displayAvatarURL({ size: 256 }), 0, 0)],
+        components: [staffRatingButtons(staffMember.id)],
       });
-      await respond(interaction, {
-        content: "Painel de tickets publicado.",
-        ephemeral: true,
-      });
+      await respond(interaction, { content: `Perfil de avaliação publicado para ${staffMember}.`, ephemeral: true });
       return;
     }
 
