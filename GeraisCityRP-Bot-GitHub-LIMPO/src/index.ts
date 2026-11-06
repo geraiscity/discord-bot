@@ -52,7 +52,7 @@ import {
 } from "./announcement-utils.js";
 import { completeOAuthVerification, handleVerificationButton } from "./verification.js";
 import { oauthVerificationConfigured, registerVerificationOAuthRoutes } from "./verification-oauth.js";
-import { closePersistence, persistenceMode, recordTicketEvent, recordTicketRating } from "./persistence.js";
+import { closePersistence, persistenceMode, recordTicketEvent } from "./persistence.js";
 import { buildAdminPanel, buildAdminSecurityConfigPanel, type AdminSection } from "./admin-panel.js";
 import { getRobloxBridgeStats, registerRobloxBridgeRoutes, robloxBridgeConfigured } from "./roblox-bridge.js";
 import {
@@ -119,6 +119,7 @@ const shield = new GeraisShield(client);
 
 // Evita criar dois canais quando a mesma pessoa aperta o botão várias vezes.
 const openingTickets = new Set<string>();
+const staffRatingQueues = new Map<string, Promise<void>>();
 
 
 type PendingAnnouncement = {
@@ -258,7 +259,6 @@ function ticketActionButtons(disabled = false): ActionRowBuilder<ButtonBuilder> 
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId("ticket_claim").setLabel("Assumir").setEmoji("👮").setStyle(ButtonStyle.Primary).setDisabled(disabled),
     new ButtonBuilder().setCustomId("ticket_add").setLabel("Adicionar pessoa").setEmoji("➕").setStyle(ButtonStyle.Secondary).setDisabled(disabled),
-    new ButtonBuilder().setCustomId("ticket_remove").setLabel("Remover pessoa").setEmoji("➖").setStyle(ButtonStyle.Secondary).setDisabled(disabled),
     new ButtonBuilder().setCustomId("ticket_close").setLabel("Fechar").setEmoji("🔒").setStyle(ButtonStyle.Danger).setDisabled(disabled),
   );
 }
@@ -270,12 +270,91 @@ function ticketCloseConfirmButtons(): ActionRowBuilder<ButtonBuilder> {
   );
 }
 
-function ticketRatingButtons(guildId: string, ticketId: string): ActionRowBuilder<ButtonBuilder> {
+function staffRatingButtons(staffId: string, count = 0, sum = 0): ActionRowBuilder<ButtonBuilder> {
   return new ActionRowBuilder<ButtonBuilder>().addComponents(
-    ...[1, 2, 3, 4, 5].map((rating) =>
-      new ButtonBuilder().setCustomId(`ticket_rate:${guildId}:${ticketId}:${rating}`).setLabel(`${rating} ⭐`).setStyle(ButtonStyle.Secondary),
-    ),
+    new ButtonBuilder()
+      .setCustomId(`staff_rating_open:${staffId}:${count}:${sum}`)
+      .setLabel("Avaliar atendente")
+      .setEmoji("⭐")
+      .setStyle(ButtonStyle.Primary),
   );
+}
+
+function staffRatingModal(staffId: string, profileMessageId: string): ModalBuilder {
+  const staff = new TextInputBuilder()
+    .setCustomId("atendente")
+    .setLabel("Menção do atendente")
+    .setValue(`<@${staffId}>`)
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMaxLength(40);
+  const rating = new TextInputBuilder()
+    .setCustomId("nota")
+    .setLabel("Nota de 1 a 5")
+    .setPlaceholder("Digite somente um número de 1 a 5")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMaxLength(1);
+  const observation = new TextInputBuilder()
+    .setCustomId("observacao")
+    .setLabel("Observação sobre o atendimento")
+    .setPlaceholder("Conte como foi sua experiência.")
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(true)
+    .setMaxLength(1000);
+  return new ModalBuilder()
+    .setCustomId(`staff_rating_submit:${staffId}:${profileMessageId}`)
+    .setTitle("Avaliar atendente")
+    .addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(staff),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(rating),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(observation),
+    );
+}
+
+function staffRatingStateFromMessage(message: Message): { staffId: string; count: number; sum: number } | null {
+  const rows = message.components as unknown as Array<{ components?: Array<{ customId?: string }> }>;
+  const customId = rows.flatMap((row) => row.components ?? []).map((component) => component.customId)
+    .find((value) => value?.startsWith("staff_rating_open:"));
+  const match = customId?.match(/^staff_rating_open:(\d{15,22}):(\d+):(\d+)$/);
+  if (!match) return null;
+  return { staffId: match[1], count: Number(match[2]), sum: Number(match[3]) };
+}
+
+function staffRatingProfileEmbed(
+  staffId: string,
+  displayName: string,
+  avatarUrl: string,
+  count: number,
+  sum: number,
+): EmbedBuilder {
+  const average = count ? sum / count : 0;
+  return new EmbedBuilder()
+    .setColor(0xfee75c)
+    .setAuthor({ name: "GERAIS CITY RP • AVALIAÇÃO DE ATENDIMENTO" })
+    .setTitle("⭐ Perfil do atendente")
+    .setThumbnail(avatarUrl)
+    .setDescription(`**Atendente:** <@${staffId}>\n**Nome:** ${displayName}\n\nAs avaliações são contabilizadas automaticamente neste perfil.`)
+    .addFields(
+      { name: "Avaliações recebidas", value: String(count), inline: true },
+      { name: "Média geral", value: count ? `${average.toFixed(2).replace(".", ",")}/5 ⭐` : "Ainda sem avaliações", inline: true },
+    )
+    .setFooter({ text: "Gerais City RP • Cada envio é contabilizado individualmente." })
+    .setTimestamp();
+}
+
+async function withStaffRatingLock<T>(key: string, action: () => Promise<T>): Promise<T> {
+  const previous = staffRatingQueues.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  staffRatingQueues.set(key, current);
+  await previous;
+  try {
+    return await action();
+  } finally {
+    release();
+    if (staffRatingQueues.get(key) === current) staffRatingQueues.delete(key);
+  }
 }
 
 function rolePanelButtons(
