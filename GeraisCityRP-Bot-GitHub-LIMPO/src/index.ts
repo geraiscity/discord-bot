@@ -993,13 +993,21 @@ async function handleInteraction(interaction: Interaction) {
       return;
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    console.log(`[TICKET-DEBUG] /${interaction.commandName} recebido; iniciando resposta privada.`);
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    console.log(`[TICKET-DEBUG] Resposta privada confirmada para /${interaction.commandName}.`);
 
     if (interaction.commandName === "painel" && interaction.options.getSubcommand(true) === "ticket") {
+      console.log("[TICKET-DEBUG] Subcomando /painel ticket iniciado.");
       const selectedChannel = interaction.options.getChannel("canal", true);
+      console.log(`[TICKET-DEBUG] Canal selecionado: ${selectedChannel.id}; buscando no servidor ${interaction.guildId ?? "sem servidor"}.`);
       const targetChannel = await interaction.guild?.channels
         .fetch(selectedChannel.id)
-        .catch(() => null);
+        .catch((error) => {
+          console.error("[TICKET-DEBUG] Falha ao buscar canal:", error);
+          return null;
+        });
+      console.log(`[TICKET-DEBUG] Busca do canal concluída: ${targetChannel?.id ?? "não encontrado"}.`);
       if (!targetChannel || !("send" in targetChannel)) {
         await respond(interaction, {
           content:
@@ -1008,9 +1016,12 @@ async function handleInteraction(interaction: Interaction) {
         });
         return;
       }
+      console.log("[TICKET-DEBUG] Verificando permissões do bot no canal.");
       if (!(await ensureChannelAccess(interaction, targetChannel))) {
+        console.log("[TICKET-DEBUG] Verificação de permissões não autorizou a publicação.");
         return;
       }
+      console.log("[TICKET-DEBUG] Permissões do canal confirmadas.");
 
       const panelImage = interaction.options.getAttachment("imagem");
       const panelThumbnail = interaction.options.getAttachment("thumbnail");
@@ -1024,6 +1035,7 @@ async function handleInteraction(interaction: Interaction) {
       let panelThumbnailUrl: string | null = null;
       try {
         for (const image of panelAttachments) {
+          console.log(`[TICKET-DEBUG] Baixando anexo ${image.name} (${image.size} bytes).`);
           const response = await fetch(image.url, { signal: AbortSignal.timeout(12_000) });
           if (!response.ok) throw new Error(`Não foi possível obter ${image.name}.`);
           const bytes = Buffer.from(await response.arrayBuffer());
@@ -1039,6 +1051,7 @@ async function handleInteraction(interaction: Interaction) {
         return;
       }
 
+      console.log(`[TICKET-DEBUG] Preparação concluída. Enviando painel para #${targetChannel.name}.`);
       await targetChannel.send({
         embeds: [
           buildTicketPanelEmbed({
@@ -1052,6 +1065,7 @@ async function handleInteraction(interaction: Interaction) {
         files,
         components: [ticketPanelButtons()],
       });
+      console.log("[TICKET-DEBUG] Mensagem do painel enviada com sucesso. Respondendo ao comando.");
       await respond(interaction, {
         content: "Painel de tickets publicado.",
         ephemeral: true,
@@ -1716,6 +1730,9 @@ client.on(Events.GuildIntegrationsUpdate, (guild) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
+  if (interaction.isChatInputCommand()) {
+    console.log(`[INTERAÇÃO] Slash /${interaction.commandName} recebido (guild ${interaction.guildId ?? "DM"}).`);
+  }
   try {
     await handleInteraction(interaction);
   } catch (error) {
