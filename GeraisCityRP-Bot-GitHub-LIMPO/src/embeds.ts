@@ -9,15 +9,23 @@ export function buildTicketPanelEmbed(options: {
   thumbnail?: string | null;
 }): EmbedBuilder {
   const embed = new EmbedBuilder()
+    .setAuthor({ name: "GERAIS CITY RP  •  CENTRAL DE ATENDIMENTO" })
     .setTitle(options.title || config.defaults.panelTitle)
     .setDescription(
       `${options.description || config.defaults.panelDescription}
 
-**Como abrir seu atendimento**
-Clique em **ABRIR TICKET** e selecione a categoria que corresponde ao que você precisa. Nossa equipe atenderá você assim que possível.`,
+Selecione a categoria que melhor corresponde à sua solicitação. Ao clicar em **ABRIR TICKET**, um menu privado será exibido para você escolher o tipo de atendimento.
+
+Nossa equipe irá assumir seu chamado assim que possível. Evite abrir mais de um ticket para o mesmo assunto.`,
+    )
+    .addFields(
+      { name: "🛠️ Suporte e Bugs", value: "Dúvidas gerais, ajuda e problemas técnicos no servidor.", inline: true },
+      { name: "🚨 Denúncias", value: "Envie denúncias e informações para análise da equipe.", inline: true },
+      { name: "🛒 Compras", value: "Atendimento sobre produtos, serviços e pagamentos.", inline: true },
+      { name: "🤝 Parcerias", value: "Propostas e oportunidades de parceria.", inline: true },
     )
     .setColor(options.color)
-    .setFooter({ text: "Atendimento da comunidade" });
+    .setFooter({ text: "Gerais City RP • Atendimento oficial" });
 
   if (options.footerImage || config.defaults.footerImage) {
     embed.setImage(options.footerImage || config.defaults.footerImage!);
