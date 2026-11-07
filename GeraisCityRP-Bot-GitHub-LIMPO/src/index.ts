@@ -25,6 +25,8 @@ import {
   TextDisplayBuilder,
   TextInputBuilder,
   TextInputStyle,
+  StringSelectMenuBuilder,
+  StringSelectMenuInteraction,
   PermissionFlagsBits,
   REST,
   Routes,
@@ -199,7 +201,7 @@ function securityVerificationModal(): ModalBuilder {
     );
 }
 
-type RepliableInteraction = ChatInputCommandInteraction | ButtonInteraction | ModalSubmitInteraction;
+type RepliableInteraction = ChatInputCommandInteraction | ButtonInteraction | StringSelectMenuInteraction | ModalSubmitInteraction;
 type ReplyOptions = InteractionReplyOptions;
 
 async function respond(
@@ -238,20 +240,19 @@ function ticketPanelButtons(): ActionRowBuilder<ButtonBuilder> {
   );
 }
 
-function ticketCategoryButtons(): ActionRowBuilder<ButtonBuilder> {
-  return new ActionRowBuilder<ButtonBuilder>().addComponents(
-    ticketTypes.map((ticket) =>
-      new ButtonBuilder()
-        .setCustomId(`ticket_category:${ticket.id}`)
-        .setLabel(ticket.label)
-        .setEmoji(ticket.emoji)
-        .setStyle(
-          ticket.id === "denuncias" ? ButtonStyle.Danger :
-          ticket.id === "compras" ? ButtonStyle.Success :
-          ticket.id === "suporte" ? ButtonStyle.Secondary : ButtonStyle.Primary,
-        ),
-    ),
-  );
+function ticketCategorySelect(): ActionRowBuilder<StringSelectMenuBuilder> {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId("ticket_category_select")
+    .setPlaceholder("Selecione o tipo de atendimento")
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions(ticketTypes.map((ticket) => ({
+      label: ticket.label,
+      value: ticket.id,
+      description: ticket.description,
+      emoji: ticket.emoji,
+    })));
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
 }
 
 function evidenceButtons(disabled = false): ActionRowBuilder<ButtonBuilder> {
@@ -511,11 +512,22 @@ async function buildTicketTranscript(channel: TextChannel, maxMessages = 500): P
 }
 
 async function privateTicketLogChannel(guild: NonNullable<Interaction["guild"]>): Promise<TextChannel | null> {
-  const id = process.env.TRANSCRIPT_CHANNEL_ID?.trim() || process.env.TICKET_LOG_CHANNEL_ID?.trim();
-  if (!id) return null;
-  const channel = await guild.channels.fetch(id).catch(() => null);
-  if (channel?.type !== ChannelType.GuildText) return null;
-  if (channel.permissionsFor(guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel)) return null;
+  const id =
+    process.env.TRANSCRIPT_CHANNEL_ID?.trim() ||
+    process.env.GERAIS_LOG_CHANNEL_ID?.trim() ||
+    process.env.TICKET_LOG_CHANNEL_ID?.trim();
+  if (!id) {
+    console.error("[TICKETS] Nenhum destino configurado. Defina TRANSCRIPT_CHANNEL_ID, GERAIS_LOG_CHANNEL_ID ou TICKET_LOG_CHANNEL_ID.");
+    return null;
+  }
+  const channel = await guild.channels.fetch(id).catch((error) => {
+    console.error(`[TICKETS] Não consegui acessar o canal de logs ${id}:`, error);
+    return null;
+  });
+  if (channel?.type !== ChannelType.GuildText) {
+    console.error(`[TICKETS] O ID de log ${id} não aponta para um canal de texto deste servidor.`);
+    return null;
+  }
   return channel;
 }
 
@@ -529,10 +541,20 @@ async function privateGeneralLogChannel(guild: NonNullable<Interaction["guild"]>
 
 async function sendTicketLog(guild: NonNullable<Interaction["guild"]>, options: MessageCreateOptions): Promise<boolean> {
   const log = await privateTicketLogChannel(guild);
-  if (log && await log.send(options).then(() => true).catch(() => false)) return true;
+  if (log) {
+    try {
+      await log.send(options);
+      return true;
+    } catch (error) {
+      console.error(`[TICKETS] Falha ao enviar transcript/log em #${log.name} (${log.id}):`, error);
+    }
+  }
   if (securityEnvironment.ownerId) {
     const owner = await client.users.fetch(securityEnvironment.ownerId).catch(() => null);
-    if (owner && await owner.send(options).then(() => true).catch(() => false)) return true;
+    if (owner && await owner.send(options).then(() => true).catch((error) => {
+      console.error("[TICKETS] Falha ao enviar fallback por DM:", error);
+      return false;
+    })) return true;
   }
   return false;
 }
@@ -686,7 +708,7 @@ function purchaseTicketModal(): ModalBuilder {
 type PurchaseTicketData = { product: string; robloxUser: string; details: string };
 
 async function createTicket(
-  interaction: ButtonInteraction | ModalSubmitInteraction,
+  interaction: ButtonInteraction | StringSelectMenuInteraction | ModalSubmitInteraction,
   type: TicketType,
   purchaseData?: PurchaseTicketData,
 ) {
@@ -722,7 +744,7 @@ async function createTicket(
   const categoryById = config.ticketCategoryId
     ? await interaction.guild.channels.fetch(config.ticketCategoryId).catch(() => null)
     : null;
-  const categoryByName = config.ticketCategoryName
+  const categoryByName = !config.ticketCategoryId && config.ticketCategoryName
     ? interaction.guild.channels.cache.find(
         (channel) =>
           channel.type === ChannelType.GuildCategory &&
@@ -730,13 +752,14 @@ async function createTicket(
       )
     : null;
   const category = categoryById ?? categoryByName;
-  const categoryIsValid =
-    !category || category.type === ChannelType.GuildCategory;
 
-  if (!categoryIsValid) {
+  if (!category || category.type !== ChannelType.GuildCategory) {
+    console.error(
+      `[TICKETS] Categoria inválida/ausente. TICKET_CATEGORY_ID=${config.ticketCategoryId ?? "(vazio)"}; TICKET_CATEGORY_NAME=${config.ticketCategoryName ?? "(vazio)"}; servidor=${interaction.guild.id}`,
+    );
     await respond(interaction, {
       content:
-        "A categoria configurada não foi encontrada ou não é uma categoria válida. Confira TICKET_CATEGORY_ID ou TICKET_CATEGORY_NAME.",
+        "Não consegui localizar a categoria de tickets configurada. Confira TICKET_CATEGORY_ID (ID de uma categoria, não de um canal) ou TICKET_CATEGORY_NAME. O ticket não foi criado para evitar ficar no lugar errado.",
       ephemeral: true,
     });
     return;
@@ -1373,6 +1396,28 @@ async function handleInteraction(interaction: Interaction) {
     return;
   }
 
+  if (interaction.isStringSelectMenu() && interaction.customId === "ticket_category_select") {
+    const type = interaction.values[0] as TicketType;
+    if (!ticketTypes.some((ticket) => ticket.id === type)) {
+      await interaction.reply({ content: "Categoria de ticket inválida.", ephemeral: true });
+      return;
+    }
+    if (type === "compras") {
+      await interaction.showModal(purchaseTicketModal());
+      return;
+    }
+    await interaction.deferReply({ ephemeral: true });
+    const key = `${interaction.guildId ?? "dm"}:${interaction.user.id}:${type}`;
+    if (openingTickets.has(key)) {
+      await interaction.editReply("Seu ticket já está sendo criado. Confira a resposta anterior.");
+      return;
+    }
+    openingTickets.add(key);
+    try { await createTicket(interaction, type); }
+    finally { openingTickets.delete(key); }
+    return;
+  }
+
   if (!interaction.isButton()) return;
 
   if (interaction.customId === "verification_check") {
@@ -1382,15 +1427,10 @@ async function handleInteraction(interaction: Interaction) {
 
   if (interaction.customId === "ticket_start") {
     await interaction.reply({
-      content: "Selecione abaixo o assunto do seu atendimento para abrir o ticket correto.",
-      components: [ticketCategoryButtons()],
+      content: "**🎫 Central de Atendimento**\nSelecione no menu abaixo o assunto que corresponde à sua solicitação. A equipe do Gerais City RP atenderá você assim que possível.",
+      components: [ticketCategorySelect()],
       ephemeral: true,
     });
-    return;
-  }
-
-  if (interaction.customId === "ticket_category:compras" || interaction.customId === "ticket_open:compras") {
-    await interaction.showModal(purchaseTicketModal());
     return;
   }
 
