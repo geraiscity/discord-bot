@@ -64,6 +64,10 @@ import {
 
 type TicketType = "bugs" | "suporte" | "denuncias" | "compras" | "parcerias";
 
+function isTicketType(value: string): value is TicketType {
+  return value === "bugs" || value === "suporte" || value === "denuncias" || value === "compras" || value === "parcerias";
+}
+
 // Canal exclusivo para auditoria dos tickets da categoria Parcerias.
 const PARTNERSHIP_LOG_CHANNEL_ID = "1568070781391470734";
 
@@ -618,11 +622,13 @@ async function removeTicketMember(channel: TextChannel, actorId: string, userId:
 async function closeTicket(channel: TextChannel, actorId: string): Promise<void> {
   const meta = ticketMetaFromChannel(channel);
   if (!meta) throw new Error("Este canal não é um ticket reconhecido.");
+  const ticketType = meta.type;
+  if (!isTicketType(ticketType)) throw new Error(`Categoria de ticket inválida: ${ticketType}`);
   if (actorId !== meta.ownerId && !isTicketStaff(channel.guild, actorId)) throw new Error("Somente o titular ou a equipe pode fechar este ticket.");
   void recordTicketEvent({ guildId: channel.guild.id, channelId: channel.id, ownerId: meta.ownerId, actorId, action: "close_requested", payload: { claimedBy: meta.claimedBy ?? null, addedUserIds: meta.addedUserIds } });
   const transcript = await buildTicketTranscript(channel);
   const transcriptFile = new AttachmentBuilder(transcript, { name: `transcript-${channel.id}.txt` });
-  const logged = await sendTicketLog(channel.guild, meta.type, {
+  const logged = await sendTicketLog(channel.guild, ticketType, {
     embeds: [new EmbedBuilder()
       .setColor(0xed4245)
       .setTitle("🔒 Ticket encerrado")
