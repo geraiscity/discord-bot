@@ -511,26 +511,6 @@ async function buildTicketTranscript(channel: TextChannel, maxMessages = 500): P
   return Buffer.from(lines.join("\n"), "utf8");
 }
 
-async function privateTicketLogChannel(guild: NonNullable<Interaction["guild"]>): Promise<TextChannel | null> {
-  const id =
-    process.env.TRANSCRIPT_CHANNEL_ID?.trim() ||
-    process.env.GERAIS_LOG_CHANNEL_ID?.trim() ||
-    process.env.TICKET_LOG_CHANNEL_ID?.trim();
-  if (!id) {
-    console.error("[TICKETS] Nenhum destino configurado. Defina TRANSCRIPT_CHANNEL_ID, GERAIS_LOG_CHANNEL_ID ou TICKET_LOG_CHANNEL_ID.");
-    return null;
-  }
-  const channel = await guild.channels.fetch(id).catch((error) => {
-    console.error(`[TICKETS] Não consegui acessar o canal de logs ${id}:`, error);
-    return null;
-  });
-  if (channel?.type !== ChannelType.GuildText) {
-    console.error(`[TICKETS] O ID de log ${id} não aponta para um canal de texto deste servidor.`);
-    return null;
-  }
-  return channel;
-}
-
 async function privateGeneralLogChannel(guild: NonNullable<Interaction["guild"]>): Promise<TextChannel | null> {
   const id = process.env.GERAIS_LOG_CHANNEL_ID?.trim() || process.env.TICKET_LOG_CHANNEL_ID?.trim();
   if (!id) return null;
@@ -540,14 +520,32 @@ async function privateGeneralLogChannel(guild: NonNullable<Interaction["guild"]>
 }
 
 async function sendTicketLog(guild: NonNullable<Interaction["guild"]>, options: MessageCreateOptions): Promise<boolean> {
-  const log = await privateTicketLogChannel(guild);
-  if (log) {
+  const channelIds = [...new Set([
+    process.env.TRANSCRIPT_CHANNEL_ID?.trim(),
+    process.env.GERAIS_LOG_CHANNEL_ID?.trim(),
+    process.env.TICKET_LOG_CHANNEL_ID?.trim(),
+  ].filter((id): id is string => Boolean(id)))];
+
+  for (const id of channelIds) {
+    const log = await guild.channels.fetch(id).catch((error) => {
+      console.error(`[TICKETS] Não consegui acessar o canal de logs ${id}:`, error);
+      return null;
+    });
+    if (log?.type !== ChannelType.GuildText) {
+      console.error(`[TICKETS] O ID ${id} não aponta para um canal de texto deste servidor.`);
+      continue;
+    }
     try {
       await log.send(options);
+      console.log(`[TICKETS] Transcript/log enviado para #${log.name} (${log.id}).`);
       return true;
     } catch (error) {
-      console.error(`[TICKETS] Falha ao enviar transcript/log em #${log.name} (${log.id}):`, error);
+      console.error(`[TICKETS] Sem permissão para enviar em #${log.name} (${log.id}); tentando o próximo destino:`, error);
     }
+  }
+
+  if (channelIds.length === 0) {
+    console.error("[TICKETS] Nenhum destino configurado. Defina TRANSCRIPT_CHANNEL_ID, GERAIS_LOG_CHANNEL_ID ou TICKET_LOG_CHANNEL_ID.");
   }
   if (securityEnvironment.ownerId) {
     const owner = await client.users.fetch(securityEnvironment.ownerId).catch(() => null);
