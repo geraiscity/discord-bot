@@ -679,7 +679,7 @@ async function closeTicket(channel: TextChannel, actorId: string): Promise<void>
     }).catch(() => undefined);
   }
 
-  await channel.send({ embeds: [new EmbedBuilder().setColor(0xed4245).setTitle("🔒 Atendimento encerrado").setDescription(`Fechado por <@${actorId}>. ${logged ? "O transcript foi salvo no canal de transcripts." : "Não consegui entregar o transcript; confira TRANSCRIPT_CHANNEL_ID."}\nEste canal será removido em alguns segundos.`)] }).catch(() => undefined);
+  await channel.send({ embeds: [new EmbedBuilder().setColor(0xed4245).setTitle("🔒 Atendimento encerrado").setDescription(`Fechado por <@${actorId}>. ${logged ? "O transcript foi salvo no canal de logs configurado." : "Não consegui entregar o transcript; confira TRANSCRIPT_CHANNEL_ID, GERAIS_LOG_CHANNEL_ID ou TICKET_LOG_CHANNEL_ID."}\nEste canal será removido em alguns segundos.`)] }).catch(() => undefined);
   setTimeout(() => { void channel.delete(`Ticket Final encerrado por ${actorId}`).catch(() => undefined); }, 3000).unref();
 }
 
