@@ -1195,6 +1195,14 @@ async function handleInteraction(interaction: Interaction) {
 
 
 
+    const legacyCommandMessage =
+      interaction.commandName === "painel-tickets"
+        ? "Este comando antigo foi substituído. Use **/painel ticket** para publicar o painel de atendimento."
+        : "Este comando não está mais disponível. Confira os comandos atuais do Gerais City RP.";
+    await respond(interaction, {
+      content: legacyCommandMessage,
+      ephemeral: true,
+    });
     return;
   }
 
@@ -1608,9 +1616,17 @@ client.once(Events.ClientReady, async (readyClient) => {
     await shield.initialize();
     const rest = new REST({ version: "10" }).setToken(config.token);
     const applicationId = readyClient.user.id;
-    const guildIds = config.guildId
-      ? [config.guildId]
+    const configuredGuildId = config.guildId;
+    const guildIds = configuredGuildId && readyClient.guilds.cache.has(configuredGuildId)
+      ? [configuredGuildId]
       : [...readyClient.guilds.cache.keys()];
+
+    if (configuredGuildId && !readyClient.guilds.cache.has(configuredGuildId)) {
+      console.warn(
+        `[COMANDOS] DISCORD_GUILD_ID (${configuredGuildId}) não corresponde a um servidor conectado. ` +
+        `Usando os servidores em que o bot está conectado: ${guildIds.join(", ") || "nenhum"}.`,
+      );
+    }
 
     const result = await syncBotCommands({
       guildIds,
