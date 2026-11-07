@@ -531,8 +531,8 @@ async function sendTicketLog(guild: NonNullable<Interaction["guild"]>, options: 
       console.error(`[TICKETS] Não consegui acessar o canal de logs ${id}:`, error);
       return null;
     });
-    if (log?.type !== ChannelType.GuildText) {
-      console.error(`[TICKETS] O ID ${id} não aponta para um canal de texto deste servidor.`);
+    if (log?.type !== ChannelType.GuildText && log?.type !== ChannelType.GuildAnnouncement) {
+      console.error(`[TICKETS] O ID ${id} não aponta para um canal de texto/anúncios deste servidor (tipo: ${log?.type ?? "inexistente"}).`);
       continue;
     }
     try {
@@ -547,13 +547,8 @@ async function sendTicketLog(guild: NonNullable<Interaction["guild"]>, options: 
   if (channelIds.length === 0) {
     console.error("[TICKETS] Nenhum destino configurado. Defina TRANSCRIPT_CHANNEL_ID, GERAIS_LOG_CHANNEL_ID ou TICKET_LOG_CHANNEL_ID.");
   }
-  if (securityEnvironment.ownerId) {
-    const owner = await client.users.fetch(securityEnvironment.ownerId).catch(() => null);
-    if (owner && await owner.send(options).then(() => true).catch((error) => {
-      console.error("[TICKETS] Falha ao enviar fallback por DM:", error);
-      return false;
-    })) return true;
-  }
+  // Nunca enviar transcript ou logs de ticket por mensagem privada.
+  // Se nenhum canal configurado aceitar o envio, registrar a falha no console.
   return false;
 }
 
@@ -671,12 +666,18 @@ async function closeTicket(channel: TextChannel, actorId: string): Promise<void>
   }
 
 
-  const owner = await client.users.fetch(meta.ownerId).catch(() => null);
-  if (owner) {
-    await owner.send({
-      embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle("⭐ Como foi seu atendimento?").setDescription("Seu ticket no Gerais City RP foi encerrado. Se quiser, avalie o atendimento abaixo.")],
-      components: [ticketRatingButtons(channel.guild.id, channel.id)],
-    }).catch(() => undefined);
+  const ticketOwner = await client.users.fetch(meta.ownerId).catch(() => null);
+  if (ticketOwner) {
+    await ticketOwner.send({
+      embeds: [new EmbedBuilder()
+        .setColor(0xed4245)
+        .setTitle("🔒 Ticket encerrado")
+        .setDescription(`Seu ticket no Gerais City RP foi encerrado por <@${actorId}>.`)
+        .setTimestamp()],
+      allowedMentions: { users: [actorId] },
+    }).catch((error) => {
+      console.error(`[TICKETS] Não consegui enviar a confirmação de fechamento por DM para ${meta.ownerId}:`, error);
+    });
   }
 
   await channel.send({ embeds: [new EmbedBuilder().setColor(0xed4245).setTitle("🔒 Atendimento encerrado").setDescription(`Fechado por <@${actorId}>. ${logged ? "O transcript foi salvo no canal de logs configurado." : "Não consegui entregar o transcript; confira TRANSCRIPT_CHANNEL_ID, GERAIS_LOG_CHANNEL_ID ou TICKET_LOG_CHANNEL_ID."}\nEste canal será removido em alguns segundos.`)] }).catch(() => undefined);
