@@ -519,37 +519,41 @@ async function privateGeneralLogChannel(guild: NonNullable<Interaction["guild"]>
   return channel;
 }
 
-async function sendTicketLog(guild: NonNullable<Interaction["guild"]>, options: MessageCreateOptions): Promise<boolean> {
-  const channelIds = [...new Set([
-    process.env.TRANSCRIPT_CHANNEL_ID?.trim(),
-    process.env.GERAIS_LOG_CHANNEL_ID?.trim(),
-    process.env.TICKET_LOG_CHANNEL_ID?.trim(),
-  ].filter((id): id is string => Boolean(id)))];
+function ticketLogChannelId(type: TicketType): string {
+  const channelIds: Record<TicketType, string> = {
+    bugs: "1549446571605758063",
+    suporte: "1549446560637657201",
+    denuncias: "1549446567650664459",
+    compras: "1549446564043301054",
+    parcerias: PARTNERSHIP_LOG_CHANNEL_ID,
+  };
+  return channelIds[type];
+}
 
-  for (const id of channelIds) {
-    const log = await guild.channels.fetch(id).catch((error) => {
-      console.error(`[TICKETS] Não consegui acessar o canal de logs ${id}:`, error);
-      return null;
-    });
-    if (log?.type !== ChannelType.GuildText && log?.type !== ChannelType.GuildAnnouncement) {
-      console.error(`[TICKETS] O ID ${id} não aponta para um canal de texto/anúncios deste servidor (tipo: ${log?.type ?? "inexistente"}).`);
-      continue;
-    }
-    try {
-      await log.send(options);
-      console.log(`[TICKETS] Transcript/log enviado para #${log.name} (${log.id}).`);
-      return true;
-    } catch (error) {
-      console.error(`[TICKETS] Sem permissão para enviar em #${log.name} (${log.id}); tentando o próximo destino:`, error);
-    }
+async function sendTicketLog(
+  guild: NonNullable<Interaction["guild"]>,
+  type: TicketType,
+  options: MessageCreateOptions,
+): Promise<boolean> {
+  const id = ticketLogChannelId(type);
+  const log = await guild.channels.fetch(id).catch((error) => {
+    console.error(`[TICKETS] Não consegui acessar o canal de logs da categoria ${type} (${id}):`, error);
+    return null;
+  });
+
+  if (log?.type !== ChannelType.GuildText && log?.type !== ChannelType.GuildAnnouncement) {
+    console.error(`[TICKETS] O canal de logs da categoria ${type} não existe ou não é um canal de texto/anúncios: ${id}.`);
+    return false;
   }
 
-  if (channelIds.length === 0) {
-    console.error("[TICKETS] Nenhum destino configurado. Defina TRANSCRIPT_CHANNEL_ID, GERAIS_LOG_CHANNEL_ID ou TICKET_LOG_CHANNEL_ID.");
+  try {
+    await log.send(options);
+    console.log(`[TICKETS] Transcript da categoria ${type} enviado para #${log.name} (${log.id}).`);
+    return true;
+  } catch (error) {
+    console.error(`[TICKETS] Falha ao enviar o transcript da categoria ${type} para #${log.name} (${log.id}):`, error);
+    return false;
   }
-  // Nunca enviar transcript ou logs de ticket por mensagem privada.
-  // Se nenhum canal configurado aceitar o envio, registrar a falha no console.
-  return false;
 }
 
 async function sendGeneralLog(guild: NonNullable<Interaction["guild"]>, options: MessageCreateOptions): Promise<boolean> {
@@ -618,7 +622,7 @@ async function closeTicket(channel: TextChannel, actorId: string): Promise<void>
   void recordTicketEvent({ guildId: channel.guild.id, channelId: channel.id, ownerId: meta.ownerId, actorId, action: "close_requested", payload: { claimedBy: meta.claimedBy ?? null, addedUserIds: meta.addedUserIds } });
   const transcript = await buildTicketTranscript(channel);
   const transcriptFile = new AttachmentBuilder(transcript, { name: `transcript-${channel.id}.txt` });
-  const logged = await sendTicketLog(channel.guild, {
+  const logged = await sendTicketLog(channel.guild, meta.type, {
     embeds: [new EmbedBuilder()
       .setColor(0xed4245)
       .setTitle("🔒 Ticket encerrado")
@@ -633,37 +637,6 @@ async function closeTicket(channel: TextChannel, actorId: string): Promise<void>
     allowedMentions: { parse: [] },
   });
 
-  void sendGeneralLog(channel.guild, {
-    embeds: [new EmbedBuilder()
-      .setColor(0xed4245)
-      .setAuthor({ name: "GERAIS CITY • TICKET" })
-      .setTitle("Ticket encerrado")
-      .addFields(
-        { name: "Titular", value: `<@${meta.ownerId}>`, inline: true },
-        { name: "Fechado por", value: `<@${actorId}>`, inline: true },
-        { name: "Categoria", value: meta.type, inline: true },
-        { name: "Transcript", value: logged ? "Salvo em transcripts" : "Falha ao salvar — confira configuração", inline: false },
-      )
-      .setFooter({ text: `Ticket ${channel.id}` })
-      .setTimestamp()],
-    allowedMentions: { parse: [] },
-  });
-
-  if (meta.type === "parcerias") {
-    void sendPartnershipLog(channel.guild, {
-      embeds: [new EmbedBuilder()
-        .setColor(0xed4245)
-        .setAuthor({ name: "GERAIS CITY • PARCERIAS" })
-        .setTitle("🔒 Atendimento de parceria encerrado")
-        .addFields(
-          { name: "Solicitante", value: "<@" + meta.ownerId + ">", inline: true },
-          { name: "Encerrado por", value: "<@" + actorId + ">", inline: true },
-          { name: "Atendimento", value: "#" + channel.name + " • " + channel.id, inline: false },
-        )
-        .setTimestamp()],
-      allowedMentions: { parse: [] },
-    });
-  }
 
 
   const ticketOwner = await client.users.fetch(meta.ownerId).catch(() => null);
@@ -680,7 +653,7 @@ async function closeTicket(channel: TextChannel, actorId: string): Promise<void>
     });
   }
 
-  await channel.send({ embeds: [new EmbedBuilder().setColor(0xed4245).setTitle("🔒 Atendimento encerrado").setDescription(`Fechado por <@${actorId}>. ${logged ? "O transcript foi salvo no canal de logs configurado." : "Não consegui entregar o transcript; confira TRANSCRIPT_CHANNEL_ID, GERAIS_LOG_CHANNEL_ID ou TICKET_LOG_CHANNEL_ID."}\nEste canal será removido em alguns segundos.`)] }).catch(() => undefined);
+  await channel.send({ embeds: [new EmbedBuilder().setColor(0xed4245).setTitle("🔒 Atendimento encerrado").setDescription(`Fechado por <@${actorId}>. ${logged ? "O transcript foi salvo no canal de logs da categoria." : "Não consegui entregar o transcript ao canal de logs desta categoria; confira o ID e as permissões do canal."}\nEste canal será removido em alguns segundos.`)] }).catch(() => undefined);
   setTimeout(() => { void channel.delete(`Ticket Final encerrado por ${actorId}`).catch(() => undefined); }, 3000).unref();
 }
 
