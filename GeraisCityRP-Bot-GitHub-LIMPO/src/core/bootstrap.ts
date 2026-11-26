@@ -65,8 +65,8 @@ import {buildTicketTranscript} from "../tickets/transcripts.js";
 import {registerSecurityEvents} from "../events/security-events.js";
 import {auditQueue,bridgeQueue} from "../performance/work-queue.js";
 import { isLogRouteKind } from "../audit/audit-core.js";
-import { saveLogRoute, validateLogChannel } from "../audit/log-routing.js";
-import { buildLogRoutingPanel, buildLogRoutePicker } from "../panels/log-panel.js";
+import { saveLogRoute, validateLogChannel, resolveLogRoute } from "../audit/log-routing.js";
+import { buildLogRoutingPanel, buildLogRoutePicker, buildLogRouteCheck } from "../panels/log-panel.js";
 import { getRobloxBridgeStats, registerRobloxBridgeRoutes, robloxBridgeConfigured } from "../roblox/bridge.js";
 import {
   buildRulesEmbed,
@@ -477,22 +477,11 @@ async function updateTicketTopic(channel: TextChannel, meta: TicketMeta): Promis
 }
 
 async function privateGeneralLogChannel(guild: NonNullable<Interaction["guild"]>): Promise<TextChannel | null> {
-  const id = process.env.GERAIS_LOG_CHANNEL_ID?.trim() || process.env.TICKET_LOG_CHANNEL_ID?.trim();
+  const id = await resolveLogRoute(guild.id,"general",null);
   if (!id) return null;
   const channel = await guild.channels.fetch(id).catch(() => null);
-  if (channel?.type !== ChannelType.GuildText) return null;
+  if (channel?.type !== ChannelType.GuildText || channel.permissionsFor(guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel)!==false) return null;
   return channel;
-}
-
-function ticketLogChannelId(type: TicketType): string {
-  const channelIds: Record<TicketType, string> = {
-    bugs: "1549446571605758063",
-    suporte: "1549446560637657201",
-    denuncias: "1549446567650664459",
-    compras: "1549446564043301054",
-    parcerias: PARTNERSHIP_LOG_CHANNEL_ID,
-  };
-  return channelIds[type];
 }
 
 async function sendTicketLog(
@@ -500,7 +489,8 @@ async function sendTicketLog(
   type: TicketType,
   options: MessageCreateOptions,
 ): Promise<boolean> {
-  const id = ticketLogChannelId(type);
+  const id=await resolveLogRoute(guild.id,`ticket_${type}`,null);
+  if(!id)return false;
   const log = await guild.channels.fetch(id).catch((error) => {
     console.error(`[TICKETS] Não consegui acessar o canal de logs da categoria ${type} (${id}):`, error);
     return null;
@@ -536,8 +526,9 @@ async function sendPartnershipLog(
   guild: NonNullable<Interaction["guild"]>,
   options: MessageCreateOptions,
 ): Promise<boolean> {
-  const channel = await guild.channels.fetch(PARTNERSHIP_LOG_CHANNEL_ID).catch(() => null);
-  if (channel?.type !== ChannelType.GuildText) return false;
+  const id=await resolveLogRoute(guild.id,"ticket_parcerias",null);
+  const channel=id?await guild.channels.fetch(id).catch(()=>null):null;
+  if(channel?.type!==ChannelType.GuildText || channel.permissionsFor(guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel)!==false)return false;
   return channel.send(options).then(() => true).catch(() => false);
 }
 
@@ -927,6 +918,9 @@ function roleIdsFromPanelMessage(message: Message): string[] {
 async function handleInteraction(interaction: Interaction) {
   if (interaction.isChatInputCommand()) {
     // Nunca usar permissões do Discord como substituto para a conferência do ID.
+    if (!interaction.guild || !shield.isTargetGuild(interaction.guild.id) || (config.guildId && interaction.guild.id !== config.guildId)) {
+      await interaction.reply({content:"Comandos disponíveis apenas no servidor autorizado.",ephemeral:true});return;
+    }
     if (shield.shouldRestrictCommand(interaction.commandName) && !shield.isOwner(interaction.user.id)) {
       await interaction.reply({
         content: securityEnvironment.ownerId
@@ -936,6 +930,11 @@ async function handleInteraction(interaction: Interaction) {
       });
       return;
     }
+    const commandPermission: Record<string,bigint> = {painel:PermissionFlagsBits.ManageChannels,"reaction-role":PermissionFlagsBits.ManageRoles,anunciar:PermissionFlagsBits.ManageMessages,divulgar:PermissionFlagsBits.ManageMessages};
+    const required = commandPermission[interaction.commandName];
+    const authorized = shield.isOwner(interaction.user.id) || interaction.guild.ownerId === interaction.user.id ||
+      (interaction.commandName === "painel-admin" ? canUseAdminPanel(interaction) : Boolean(required && interaction.memberPermissions?.has(required)));
+    if(!authorized){await interaction.reply({content:"⛔ Você não tem autorização para este comando.",ephemeral:true});return;}
     if (interaction.commandName === "anunciar") {
       if (!interaction.guild || !interaction.channelId) {
         await interaction.reply({ content: "Use /anunciar dentro de um canal do servidor.", ephemeral: true });
@@ -1376,6 +1375,7 @@ async function handleInteraction(interaction: Interaction) {
       return;
     }
     const [action, rawKind] = interaction.customId.split(":");
+    if(interaction.isButton() && action==="log_route_check"){await interaction.deferUpdate();await interaction.editReply(await buildLogRouteCheck(guild,shield.logChannelId||null));return;}
     if (!rawKind || !isLogRouteKind(rawKind) || !((interaction.isButton() && (action === "log_route_pick" || action === "log_route_reset")) || (interaction.isChannelSelectMenu() && action === "log_route_select"))) {
       await interaction.reply({content:"Ação de logs inválida.",ephemeral:true});
       return;
@@ -1392,7 +1392,7 @@ async function handleInteraction(interaction: Interaction) {
       return;
     }
     if (id) {
-      const invalid = await validateLogChannel(guild, id);
+      const invalid = await validateLogChannel(guild, id,rawKind.startsWith("ticket_"));
       if (invalid) {
         await interaction.editReply(await buildLogRoutePicker(guild, legacy, rawKind, "⚠️ " + invalid));
         return;
@@ -1740,21 +1740,16 @@ client.once(Events.ClientReady, async (readyClient) => {
     await shield.initialize();
     const rest = new REST({ version: "10" }).setToken(config.token);
     const applicationId = readyClient.user.id;
-    const configuredGuildId = config.guildId;
-    const guildIds = configuredGuildId && readyClient.guilds.cache.has(configuredGuildId)
-      ? [configuredGuildId]
-      : [...readyClient.guilds.cache.keys()];
-
-    if (configuredGuildId && !readyClient.guilds.cache.has(configuredGuildId)) {
-      console.warn(
-        `[COMANDOS] DISCORD_GUILD_ID (${configuredGuildId}) não corresponde a um servidor conectado. ` +
-        `Usando os servidores em que o bot está conectado: ${guildIds.join(", ") || "nenhum"}.`,
-      );
-    }
+    const configuredGuildId = config.guildId || securityEnvironment.guildId;
+    const guildIds = configuredGuildId
+      ? (readyClient.guilds.cache.has(configuredGuildId) ? [configuredGuildId] : [])
+      : (readyClient.guilds.cache.size === 1 ? [...readyClient.guilds.cache.keys()] : []);
+    if(!guildIds.length) throw new Error("Configure DISCORD_GUILD_ID para um servidor conectado; registro de comandos interrompido.");
 
     const result = await syncBotCommands({
       guildIds,
       commands: commandDefinitions,
+      guildOnly:true,
       purgeLegacyGlobalCommands: config.purgeLegacyGlobalCommands,
       api: {
         replaceGuild: async (guildId, commands) => {

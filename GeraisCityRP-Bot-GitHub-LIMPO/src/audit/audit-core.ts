@@ -20,7 +20,7 @@ export function auditDestination(kind: "channel" | "role" | "member" | "server",
   return env[specific]?.trim() || env.DISCORD_AUDIT_LOG_CHANNEL_ID?.trim() || env.GERAIS_LOG_CHANNEL_ID?.trim() || shieldChannel || null;
 }
 
-export const logRouteKinds = ["channel", "role", "member", "server", "general", "security"] as const;
+export const logRouteKinds = ["channel", "role", "member", "server", "general", "security", "ticket_bugs", "ticket_suporte", "ticket_denuncias", "ticket_compras", "ticket_parcerias", "roblox", "roblox_security"] as const;
 export type LogRouteKind = typeof logRouteKinds[number];
 export type LogRoutes = Partial<Record<LogRouteKind, string>>;
 export function isLogRouteKind(value: string): value is LogRouteKind {
@@ -38,8 +38,13 @@ export function normalizeLogRoutes(value: unknown): LogRoutes {
 export function effectiveLogRoute(kind: LogRouteKind, routes: LogRoutes, env: Record<string, string | undefined>, legacySecurity: string | null): string | null {
   const security = routes.security || legacySecurity || null;
   if (kind === "security") return security;
+  if(kind==="roblox")return routes.roblox || env.ROBLOX_LOG_CHANNEL_ID?.trim() || env.GERAIS_LOG_CHANNEL_ID?.trim() || null;
+  if(kind==="roblox_security")return routes.roblox_security || env.ROBLOX_SECURITY_LOG_CHANNEL_ID?.trim() || security;
+  if(kind==="ticket_bugs"||kind==="ticket_suporte"||kind==="ticket_denuncias"||kind==="ticket_compras"||kind==="ticket_parcerias")return routes[kind] || env[kind.toUpperCase()+"_LOG_CHANNEL_ID"]?.trim() || env.TRANSCRIPT_CHANNEL_ID?.trim() || env.TICKET_LOG_CHANNEL_ID?.trim() || legacyTicketDestinations[kind];
   const general = routes.general || env.DISCORD_AUDIT_LOG_CHANNEL_ID?.trim() || env.GERAIS_LOG_CHANNEL_ID?.trim() || security;
   if (kind === "general") return general || null;
   const specific = {channel:"DISCORD_CHANNEL_LOG_CHANNEL_ID", role:"DISCORD_ROLE_LOG_CHANNEL_ID", member:"DISCORD_MEMBER_LOG_CHANNEL_ID", server:"DISCORD_SERVER_LOG_CHANNEL_ID"}[kind];
   return routes[kind] || env[specific]?.trim() || general || null;
 }
+
+export const legacyTicketDestinations={ticket_bugs:"1549446571605758063",ticket_suporte:"1549446560637657201",ticket_denuncias:"1549446567650664459",ticket_compras:"1549446564043301054",ticket_parcerias:"1568070781391470734"} as const;

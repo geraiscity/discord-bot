@@ -11,7 +11,7 @@ local Bridge = {}
 -- Troque pela URL pública do seu bot/deployment (sem barra no final).
 local BRIDGE_URL = "https://SEU-DOMINIO.replit.app"
 -- Use o mesmo valor do Secret ROBLOX_BRIDGE_SECRET configurado no host do bot.
-local BRIDGE_SECRET = "COLOQUE_UMA_CHAVE_FORTE_AQUI"
+local BRIDGE_SECRET = HttpService:GetSecret("ROBLOX_BRIDGE_SECRET") -- Configure no Creator Hub; nunca no código.
 
 local function playerInfo(player)
 	if not player then return nil end

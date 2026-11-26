@@ -26,6 +26,7 @@ export interface SyncOptions {
   api: CommandSyncApi;
   /** Apaga todos os comandos globais deste aplicativo, inclusive nomes antigos. */
   purgeLegacyGlobalCommands?: boolean;
+  guildOnly?: boolean;
 }
 
 export interface SyncResult {
@@ -57,7 +58,8 @@ export async function syncBotCommands(options: SyncOptions): Promise<SyncResult>
   const guildIds = [...new Set(options.guildIds.filter(Boolean))];
 
   if (guildIds.length === 0) {
-    // Sem servidores conectados: registra globalmente, como no projeto original.
+    if(options.guildOnly) throw new Error("Nenhum servidor autorizado conectado; comandos globais não serão publicados.");
+    // Compatibilidade para usos não restritos.
     await api.replaceGlobal(commands);
     return {
       scope: "global",

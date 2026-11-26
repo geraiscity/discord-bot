@@ -81,3 +81,5 @@ test("não apaga comandos globais se a sincronização do servidor falhar", asyn
   await assert.rejects(syncBotCommands({ guildIds: ["111", "222"], commands: current, api }), /Discord indisponível/);
   assert.deepEqual(operations.map((op) => op[0]), ["guild", "guild"]);
 });
+
+test("modo privado não publica global sem servidor",async()=>{const {api,operations}=fakeApi();await assert.rejects(syncBotCommands({guildIds:[],commands:current,api,guildOnly:true}),/Nenhum servidor/);assert.deepEqual(operations,[]);});

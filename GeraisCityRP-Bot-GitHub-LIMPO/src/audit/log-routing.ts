@@ -48,12 +48,13 @@ export function cachedSecurityRoute(guildId: string | undefined, legacy: string 
 export async function resolveLogRoute(guildId: string, kind: LogRouteKind, legacy: string | null): Promise<string | null> {
   return effectiveLogRoute(kind, await getLogRoutes(guildId), process.env, legacy);
 }
-export async function validateLogChannel(guild: Guild, id: string): Promise<string | null> {
+export async function validateLogChannel(guild: Guild, id: string, transcript=false): Promise<string | null> {
   const channel = await guild.channels.fetch(id, {force:true}).catch(() => null);
-  if (channel?.type !== ChannelType.GuildText) return "Escolha um canal de texto deste servidor.";
+  if (channel?.type !== ChannelType.GuildText && !(transcript && channel?.type===ChannelType.GuildAnnouncement)) return "Canal inexistente, inacessível ou de tipo incompatível.";
   if (channel.permissionsFor(guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel) !== false) return "O canal deve estar oculto para @everyone.";
   const me = guild.members.me;
   if (!me || !channel.permissionsFor(me)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) return "Conceda ao bot Ver Canal, Enviar Mensagens e Incorporar Links neste canal.";
+  if(transcript && !channel.permissionsFor(me)?.has(PermissionFlagsBits.AttachFiles))return "Permita Anexar Arquivos ao bot.";
   return null;
 }
 export async function saveLogRoute(guildId: string, kind: LogRouteKind, id: string | null): Promise<Storage> {

@@ -28,3 +28,5 @@ test("configuração persistida aceita apenas categorias e IDs válidos", () => 
   assert.equal(isLogRouteKind("security"),true);
   assert.equal(isLogRouteKind("unknown"),false);
 });
+
+test("destinos de tickets e Roblox respeitam seleção do painel",()=>{assert.equal(effectiveLogRoute("ticket_bugs",{ticket_bugs:"new"},{},"shield"),"new");assert.equal(effectiveLogRoute("ticket_bugs",{},{TRANSCRIPT_CHANNEL_ID:"transcript"},"shield"),"transcript");assert.equal(effectiveLogRoute("roblox",{},{ROBLOX_LOG_CHANNEL_ID:"game"},"shield"),"game");assert.equal(effectiveLogRoute("roblox_security",{security:"shield2"},{},"shield"),"shield2");});

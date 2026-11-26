@@ -311,8 +311,8 @@ function shouldSendSecurity(event: RobloxBridgeEvent): boolean {
 async function dispatch(client: Client, event: RobloxBridgeEvent): Promise<void> {
   const guild = await targetGuild(client);
   if (!guild) return;
-  const generalId = process.env.GERAIS_LOG_CHANNEL_ID?.trim() || process.env.ROBLOX_LOG_CHANNEL_ID?.trim();
-  const securityId=await resolveLogRoute(guild.id,"security",process.env.SECURITY_ALERT_CHANNEL_ID?.trim()||process.env.SECURITY_LOG_CHANNEL_ID?.trim()||null);
+  const generalId=await resolveLogRoute(guild.id,"roblox",null);
+  const securityId=await resolveLogRoute(guild.id,"roblox_security",process.env.SECURITY_ALERT_CHANNEL_ID?.trim()||process.env.SECURITY_LOG_CHANNEL_ID?.trim()||null);
   const embed = buildEventEmbed(event);
 
   if (shouldSendSecurity(event)) {
@@ -321,7 +321,7 @@ async function dispatch(client: Client, event: RobloxBridgeEvent): Promise<void>
     return;
   }
   if (shouldSendGeneral(event)) {
-    const channel = await resolveTextChannel(client, guild, generalId);
+    const channel = await resolveTextChannel(client, guild, generalId ?? undefined);
     if (channel) await channel.send({ embeds: [embed], allowedMentions: { parse: [] } }).catch(() => undefined);
   }
 }
