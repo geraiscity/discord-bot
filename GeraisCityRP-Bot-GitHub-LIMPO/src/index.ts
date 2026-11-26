@@ -1428,7 +1428,8 @@ async function handleInteraction(interaction: Interaction) {
       return;
     }
     if (action === "back") {
-      await interaction.update(await buildAdminPanel(client, interaction.guild, "security", shield.panelState()));
+      await interaction.deferUpdate();
+      await interaction.editReply(await buildAdminPanel(client, interaction.guild, "security", shield.panelState()));
       return;
     }
 
@@ -1482,22 +1483,27 @@ async function handleInteraction(interaction: Interaction) {
       return;
     }
 
-    const result = await shield.panelAction(interaction.guild, interaction.user.id, action);
+    // Acknowledge the button before database, Discord REST or snapshot work.
+    // Keep the original panel intact for read-only actions and private results.
     const stateChanging = new Set(["toggle", "mode", "safe", "snapshot_create", "release", "test", "verification_disable"]);
     if (stateChanging.has(action)) {
-      const onConfigPage = ["bot_list", "team_list", "verification_status", "verification_disable"].includes(action);
+      await interaction.deferUpdate();
+      const result = await shield.panelAction(interaction.guild, interaction.user.id, action);
+      const onConfigPage = action === "verification_disable";
       if (onConfigPage) {
-        await interaction.update(buildAdminSecurityConfigPanel(interaction.guild, shield.panelState()));
+        await interaction.editReply(buildAdminSecurityConfigPanel(interaction.guild, shield.panelState()));
       } else {
-        await interaction.update(await buildAdminPanel(client, interaction.guild, "security", shield.panelState()));
+        await interaction.editReply(await buildAdminPanel(client, interaction.guild, "security", shield.panelState()));
       }
       if (result.content || result.embeds?.length) {
-        await interaction.followUp({ content: result.content, embeds: result.embeds, ephemeral: true });
+        await interaction.followUp({ content: result.content, embeds: result.embeds, ephemeral: true, allowedMentions: { parse: [] } });
       }
       return;
     }
 
-    await interaction.reply({ content: result.content, embeds: result.embeds, ephemeral: true });
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const result = await shield.panelAction(interaction.guild, interaction.user.id, action);
+    await interaction.editReply({ content: result.content, embeds: result.embeds, allowedMentions: { parse: [] } });
     return;
   }
 
@@ -1512,7 +1518,8 @@ async function handleInteraction(interaction: Interaction) {
       return;
     }
     const section: AdminSection = rawSection === "roblox" || rawSection === "logs" || rawSection === "tickets" || rawSection === "security" ? rawSection : "home";
-    await interaction.update(await buildAdminPanel(client, interaction.guild, section, shield.panelState()));
+    await interaction.deferUpdate();
+    await interaction.editReply(await buildAdminPanel(client, interaction.guild, section, shield.panelState()));
     return;
   }
 
@@ -1778,17 +1785,35 @@ client.on(Events.InteractionCreate, async (interaction) => {
       typeof error.code === "number"
         ? error.code
         : undefined;
-    const message = {
-      content:
-        discordCode === 50001
-          ? "O Discord recusou o acesso do bot ao canal selecionado. Verifique as permissões específicas desse canal e da categoria."
-          : "Não foi possível concluir esta ação. Verifique os logs do bot.",
-      ephemeral: true,
+    const explanations: Record<number, string> = {
+      50001: "O bot não tem acesso ao canal ou servidor. Confira as permissões do canal e da categoria.",
+      50013: "O bot não tem a permissão necessária. Confira as permissões e a posição do cargo do bot acima dos cargos que ele gerencia.",
+      50035: "O Discord rejeitou os dados da operação. Atualize o painel e confira os campos selecionados.",
+      10003: "O canal não existe mais ou não está disponível. Atualize o painel e selecione outro canal.",
+      10007: "O membro não está mais disponível neste servidor.",
+      10011: "O cargo não existe mais. Selecione um cargo válido.",
+      10062: "A interação expirou. Abra novamente o painel e confira o estado antes de repetir.",
+      40060: "Esta interação já foi confirmada. Atualize o painel antes de tentar novamente.",
+      429: "O Discord está limitando temporariamente as solicitações. Aguarde um momento e atualize o painel.",
     };
-    if (interaction.isRepliable() && (interaction.replied || interaction.deferred)) {
-      await interaction.followUp(message).catch(() => undefined);
-    } else if (interaction.isRepliable()) {
-      await interaction.reply(message).catch(() => undefined);
+    const content = (discordCode === undefined ? undefined : explanations[discordCode])
+      ?? "Não foi possível confirmar a conclusão desta ação. Atualize o painel e confira se a alteração já foi aplicada antes de tentar novamente.";
+    const message = { content: "⚠️ " + content, flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] as [] } };
+    if (interaction.isRepliable()) {
+      // A deferred reply has an outstanding response; a deferred update refers
+      // to the existing panel, which must never be replaced by an error.
+      const updatesPanel = interaction.isButton() && (
+        interaction.customId.startsWith("admin_panel:") ||
+        ["back", "toggle", "mode", "safe", "snapshot_create", "release", "test", "verification_disable"]
+          .some((action) => interaction.customId === "admin_security:" + action)
+      );
+      if (interaction.deferred && !interaction.replied && !updatesPanel) {
+        await interaction.editReply({ content: message.content, allowedMentions: message.allowedMentions }).catch(() => undefined);
+      } else if (interaction.replied || interaction.deferred) {
+        await interaction.followUp(message).catch(() => undefined);
+      } else {
+        await interaction.reply(message).catch(() => undefined);
+      }
     }
   }
 });
