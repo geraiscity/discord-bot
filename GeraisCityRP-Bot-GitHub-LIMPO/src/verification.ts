@@ -182,15 +182,16 @@ export async function handleVerificationButton(interaction: ButtonInteraction): 
     return;
   }
 
+  await interaction.deferReply({ ephemeral: true });
   const config = await loadVerificationConfig();
   if (!config?.enabled || config.guildId !== interaction.guild.id) {
-    await interaction.reply({ content: "A verificação automática está desativada ou ainda não foi configurada.", ephemeral: true });
+    await interaction.editReply({ content: "A verificação automática está desativada ou ainda não foi configurada." });
     return;
   }
 
   const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
   if (!member) {
-    await interaction.reply({ content: "Não consegui carregar seu perfil no servidor. Tente novamente em alguns segundos.", ephemeral: true });
+    await interaction.editReply({ content: "Não consegui carregar seu perfil no servidor. Tente novamente em alguns segundos." });
     return;
   }
 
@@ -205,8 +206,7 @@ export async function handleVerificationButton(interaction: ButtonInteraction): 
       accountAgeDays: decision.accountAgeDays,
       reason: decision.reason,
     });
-    await interaction.reply({
-      ephemeral: true,
+    await interaction.editReply({
       embeds: [
         new EmbedBuilder()
           .setColor(0xed4245)
@@ -228,8 +228,7 @@ export async function handleVerificationButton(interaction: ButtonInteraction): 
         .setEmoji("🔐")
         .setURL(url),
     );
-    await interaction.reply({
-      ephemeral: true,
+    await interaction.editReply({
       embeds: [new EmbedBuilder()
         .setColor(0x5865f2)
         .setTitle("🔐 Última etapa da verificação")
@@ -242,12 +241,11 @@ export async function handleVerificationButton(interaction: ButtonInteraction): 
 
   const granted = await grantVerificationRole(member);
   if (!granted.ok || !granted.role) {
-    await interaction.reply({ content: granted.message, ephemeral: true });
+    await interaction.editReply({ content: granted.message });
     return;
   }
   void recordVerificationEvent({ guildId: interaction.guild.id, userId: interaction.user.id, approved: true, method: "native", accountAgeDays: decision.accountAgeDays });
-  await interaction.reply({
-    ephemeral: true,
+  await interaction.editReply({
     embeds: [
       new EmbedBuilder()
         .setColor(0x57f287)

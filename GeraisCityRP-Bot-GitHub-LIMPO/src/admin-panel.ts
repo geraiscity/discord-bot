@@ -9,8 +9,9 @@ import {
 } from "discord.js";
 import { getRecentRobloxEvents, getRobloxBridgeStats, robloxBridgeConfigured } from "./roblox-bridge.js";
 import { parseTicketTopic } from "./ticket-meta.js";
+import { buildDiagnosticsEmbed } from "./diagnostics.js";
 
-export type AdminSection = "home" | "roblox" | "logs" | "tickets" | "security";
+export type AdminSection = "home" | "roblox" | "logs" | "tickets" | "security" | "diagnostics";
 
 export type SecurityPanelState = {
   enabled: boolean;
@@ -42,6 +43,7 @@ function navigation(active: AdminSection): ActionRowBuilder<ButtonBuilder>[] {
     ),
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId(`admin_panel:${active}:refresh`).setLabel("Atualizar").setEmoji("🔄").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("admin_panel:diagnostics").setLabel("Diagnóstico").setEmoji("🩺").setStyle(active === "diagnostics" ? ButtonStyle.Primary : ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("admin_panel:close").setLabel("Fechar").setEmoji("✖️").setStyle(ButtonStyle.Danger),
     ),
   ];
@@ -135,6 +137,10 @@ export async function buildAdminPanel(
 ) {
   const bridge = getRobloxBridgeStats();
   const persistence = process.env.DATABASE_URL?.trim() ? "PostgreSQL configurado" : "Armazenamento local/fallback";
+
+  if (section === "diagnostics") {
+    return { embeds: [await buildDiagnosticsEmbed(client, guild, securityState)], components: navigation(section) };
+  }
 
   if (section === "roblox") {
     const embed = new EmbedBuilder()

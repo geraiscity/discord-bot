@@ -56,6 +56,7 @@ import { completeOAuthVerification, handleVerificationButton } from "./verificat
 import { oauthVerificationConfigured, registerVerificationOAuthRoutes } from "./verification-oauth.js";
 import { closePersistence, persistenceMode, recordTicketEvent, recordTicketRating } from "./persistence.js";
 import { buildAdminPanel, buildAdminSecurityConfigPanel, type AdminSection } from "./admin-panel.js";
+import { interactionMetrics } from "./diagnostics-core.js";
 import { getRobloxBridgeStats, registerRobloxBridgeRoutes, robloxBridgeConfigured } from "./roblox-bridge.js";
 import {
   buildRulesEmbed,
@@ -1517,7 +1518,11 @@ async function handleInteraction(interaction: Interaction) {
       await interaction.update({ content: "Painel administrativo fechado.", embeds: [], components: [] });
       return;
     }
-    const section: AdminSection = rawSection === "roblox" || rawSection === "logs" || rawSection === "tickets" || rawSection === "security" ? rawSection : "home";
+    if (rawSection === "diagnostics" && (!shield.isOwner(interaction.user.id) || !shield.isTargetGuild(interaction.guild.id))) {
+      await interaction.reply({ content: "Diagnóstico disponível apenas ao proprietário configurado, no servidor autorizado.", ephemeral: true });
+      return;
+    }
+    const section: AdminSection = rawSection === "roblox" || rawSection === "logs" || rawSection === "tickets" || rawSection === "security" || rawSection === "diagnostics" ? rawSection : "home";
     await interaction.deferUpdate();
     await interaction.editReply(await buildAdminPanel(client, interaction.guild, section, shield.panelState()));
     return;
@@ -1771,12 +1776,15 @@ client.on(Events.GuildIntegrationsUpdate, (guild) => {
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
+  const started = performance.now();
+  let failed = false;
   if (interaction.isChatInputCommand()) {
     console.log(`[INTERAÇÃO] Slash /${interaction.commandName} recebido (guild ${interaction.guildId ?? "DM"}).`);
   }
   try {
     await handleInteraction(interaction);
   } catch (error) {
+    failed = true;
     console.error("Falha ao processar interação:", error);
     const discordCode =
       typeof error === "object" &&
@@ -1798,7 +1806,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     };
     const content = (discordCode === undefined ? undefined : explanations[discordCode])
       ?? "Não foi possível confirmar a conclusão desta ação. Atualize o painel e confira se a alteração já foi aplicada antes de tentar novamente.";
-    const message = { content: "⚠️ " + content, flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] as [] } };
+    const message: InteractionReplyOptions = { content: "⚠️ " + content, flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } };
     if (interaction.isRepliable()) {
       // A deferred reply has an outstanding response; a deferred update refers
       // to the existing panel, which must never be replaced by an error.
@@ -1815,6 +1823,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await interaction.reply(message).catch(() => undefined);
       }
     }
+  } finally {
+    interactionMetrics.record(performance.now() - started, failed);
   }
 });
 

@@ -130,6 +130,40 @@ async function getPool(): Promise<PgPool | null> {
   return initPromise;
 }
 
+type DatabaseHealth = "local" | "available" | "unavailable" | "timeout";
+let healthProbe: Promise<DatabaseHealth> | null = null;
+let healthCache: { status: DatabaseHealth; at: number } | null = null;
+
+/** Read-only probe; never expose the connection string or raw errors. */
+export async function probeDatabase(): Promise<DatabaseHealth> {
+  if (!databaseUrl()) return "local";
+  if (healthCache && Date.now() - healthCache.at < 10_000) return healthCache.status;
+  if (!healthProbe) {
+    healthProbe = (async (): Promise<DatabaseHealth> => {
+      try {
+        const db = await getPool();
+        if (!db) return "unavailable";
+        await db.query("select 1");
+        return "available";
+      } catch {
+        return "unavailable";
+      }
+    })().then((status) => {
+      healthCache = { status, at: Date.now() };
+      return status;
+    }).finally(() => { healthProbe = null; });
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      healthProbe,
+      new Promise<DatabaseHealth>((resolve) => { timer = setTimeout(() => resolve("timeout"), 3000); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function persistenceMode(): Promise<PersistenceMode> {
   return (await getPool()) ? "postgresql" : "arquivo";
 }
