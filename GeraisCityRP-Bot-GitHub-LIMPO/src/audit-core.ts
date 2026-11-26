@@ -19,3 +19,27 @@ export function auditDestination(kind: "channel" | "role" | "member" | "server",
   const specific = {channel:"DISCORD_CHANNEL_LOG_CHANNEL_ID", role:"DISCORD_ROLE_LOG_CHANNEL_ID", member:"DISCORD_MEMBER_LOG_CHANNEL_ID", server:"DISCORD_SERVER_LOG_CHANNEL_ID"}[kind];
   return env[specific]?.trim() || env.DISCORD_AUDIT_LOG_CHANNEL_ID?.trim() || env.GERAIS_LOG_CHANNEL_ID?.trim() || shieldChannel || null;
 }
+
+export const logRouteKinds = ["channel", "role", "member", "server", "general", "security"] as const;
+export type LogRouteKind = typeof logRouteKinds[number];
+export type LogRoutes = Partial<Record<LogRouteKind, string>>;
+export function isLogRouteKind(value: string): value is LogRouteKind {
+  return (logRouteKinds as readonly string[]).includes(value);
+}
+export function normalizeLogRoutes(value: unknown): LogRoutes {
+  const result: LogRoutes = {};
+  if (!value || typeof value !== "object") return result;
+  for (const kind of logRouteKinds) {
+    const id = (value as Record<string, unknown>)[kind];
+    if (typeof id === "string" && /^\d{15,22}$/.test(id)) result[kind] = id;
+  }
+  return result;
+}
+export function effectiveLogRoute(kind: LogRouteKind, routes: LogRoutes, env: Record<string, string | undefined>, legacySecurity: string | null): string | null {
+  const security = routes.security || legacySecurity || null;
+  if (kind === "security") return security;
+  const general = routes.general || env.DISCORD_AUDIT_LOG_CHANNEL_ID?.trim() || env.GERAIS_LOG_CHANNEL_ID?.trim() || security;
+  if (kind === "general") return general || null;
+  const specific = {channel:"DISCORD_CHANNEL_LOG_CHANNEL_ID", role:"DISCORD_ROLE_LOG_CHANNEL_ID", member:"DISCORD_MEMBER_LOG_CHANNEL_ID", server:"DISCORD_SERVER_LOG_CHANNEL_ID"}[kind];
+  return routes[kind] || env[specific]?.trim() || general || null;
+}

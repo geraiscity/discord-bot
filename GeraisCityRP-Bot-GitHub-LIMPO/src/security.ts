@@ -1,3 +1,4 @@
+import { cachedSecurityRoute, getLogRoutes, resolveLogRoute, saveLogRoute, validateLogChannel } from "./log-routing.js";
 import {
   AuditLogEvent,
   ChannelType,
@@ -178,12 +179,12 @@ export class GeraisShield {
   private canAutomate(): boolean { return this.mode === "proteger" && !this.safeMode; }
 
 
-  panelState() {
+  panelState(guildId?: string) {
     return {
       enabled: this.enabled,
       mode: this.mode,
       safeMode: this.safeMode,
-      logChannelId: this.logChannelId || null,
+      logChannelId: cachedSecurityRoute(guildId, this.logChannelId || null),
       incidentCount: this.incidents.length,
       allowedBotCount: this.allowedBotIds.size,
       trustedAdminCount: this.trustedAdminIds.size,
@@ -235,7 +236,7 @@ export class GeraisShield {
             { name: "Anti-cópia", value: securityEnvironment.antiCopy ? "Ativo" : "Desativado", inline: true },
             { name: "Risk Score", value: `Limite: **${securityEnvironment.riskThreshold}**`, inline: true },
             { name: "Anti-nuke", value: `${securityEnvironment.destructiveThreshold} ações / 30s`, inline: true },
-            { name: "Logs", value: this.logChannelId ? `<#${this.logChannelId}>` : "Não configurado (sem mensagens privadas)", inline: false },
+            { name: "Logs", value: cachedSecurityRoute(guild.id, this.logChannelId || null) ? `<#${cachedSecurityRoute(guild.id, this.logChannelId || null)}>` : "Não configurado (sem mensagens privadas)", inline: false },
             { name: "Snapshot", value: snapshot ? `Salvo <t:${Math.floor(snapshot.createdAt / 1000)}:R> • ${snapshot.roles.length} cargos • ${snapshot.channels.length} canais` : "Nenhum snapshot salvo", inline: false },
             { name: "Verificação", value: verification?.enabled ? `Ativa em <#${verification.channelId}> → <@&${verification.roleId}>` : "Não configurada/desativada", inline: false },
             { name: "Persistência", value: storage === "postgresql" ? "PostgreSQL + fallback local" : "Arquivo local", inline: true },
@@ -364,14 +365,11 @@ export class GeraisShield {
     if (action === "log_channel") {
       const channelId = params.channelId?.trim() ?? "";
       if (!validSnowflake(channelId)) return { content: "Informe um ID de canal válido." };
-      const channel = await guild.channels.fetch(channelId).catch(() => null);
-      if (!channel || channel.type !== ChannelType.GuildText || channel.permissionsFor(guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel)) {
-        return { content: "Escolha um canal de texto privado, invisível para @everyone." };
-      }
-      this.logChannelId = channel.id;
-      this.queueSave();
+      const invalid = await validateLogChannel(guild, channelId);
+      if (invalid) return {content: invalid};
+      const stored = await saveLogRoute(guild.id, "security", channelId);
       await this.alert(guild, "Canal de segurança configurado", "Este canal receberá os incidentes privados do Shield.");
-      return { content: `✅ Canal de segurança configurado: <#${channel.id}>.` };
+      return { content: "✅ Canal de segurança configurado: <#" + channelId + ">." + (stored === "local" && process.env.DATABASE_URL ? " Salvo localmente; banco indisponível." : "") };
     }
 
     if (action === "verification_status") {
@@ -467,6 +465,7 @@ export class GeraisShield {
 
     for (const guild of this.client.guilds.cache.values()) {
       if (!this.isTargetGuild(guild.id)) continue;
+      await getLogRoutes(guild.id);
       for (const channel of guild.channels.cache.values()) {
         if ("topic" in channel && typeof channel.topic === "string" && channel.topic.startsWith("ticket:")) this.observedPrivateChannels.add(channel.id);
       }
@@ -535,8 +534,9 @@ export class GeraisShield {
       .addFields({ name: "Incidente", value: `\`${incident.id}\``, inline: true })
       .setFooter({ text: "Gerais Shield Final • logs privados • conteúdo sensível não é reproduzido" })
       .setTimestamp();
-    if (this.logChannelId) {
-      const channel = await guild.channels.fetch(this.logChannelId).catch(() => null);
+    const destination = await resolveLogRoute(guild.id, "security", this.logChannelId || null);
+    if (destination) {
+      const channel = await guild.channels.fetch(destination).catch(() => null);
       if (channel?.type === ChannelType.GuildText) {
         if (channel.permissionsFor(guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel) === false) {
           const ok = await channel.send({ embeds: [embed], allowedMentions: { parse: [] } }).then(() => true).catch(() => false);
@@ -662,7 +662,7 @@ export class GeraisShield {
               { name: "Anti-nuke", value: `${securityEnvironment.destructiveThreshold} ações / 30s`, inline: true },
               { name: "Anti-clone", value: `${securityEnvironment.creationThreshold} criações / 30s`, inline: true },
               { name: "2FA da moderação", value: Number(interaction.guild.mfaLevel) >= 1 ? "Exigido pelo servidor" : "Não exigido — recomendado ativar no Discord", inline: false },
-              { name: "Logs", value: this.logChannelId ? `<#${this.logChannelId}>` : "Não configurado (sem mensagens privadas)", inline: false },
+              { name: "Logs", value: cachedSecurityRoute(interaction.guild.id, this.logChannelId || null) ? `<#${cachedSecurityRoute(interaction.guild.id, this.logChannelId || null)}>` : "Não configurado (sem mensagens privadas)", inline: false },
               { name: "Snapshot", value: snapshot ? `Salvo <t:${Math.floor(snapshot.createdAt / 1000)}:R> • ${snapshot.roles.length} cargos • ${snapshot.channels.length} canais` : "Nenhum snapshot salvo", inline: false },
               { name: "Verificação", value: verification?.enabled ? `Ativa em <#${verification.channelId}> → <@&${verification.roleId}>` : "Não configurada/desativada", inline: false },
               { name: "Bots permitidos", value: `${this.allowedBotIds.size}`, inline: true },
@@ -719,14 +719,14 @@ export class GeraisShield {
     if (group === "logs") {
       if (subcommand === "canal") {
         const channel = interaction.options.getChannel("canal", true);
-        const resolved = await interaction.guild.channels.fetch(channel.id).catch(() => null);
-        if (!resolved || resolved.type !== ChannelType.GuildText || resolved.permissionsFor(interaction.guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel)) {
-          await interaction.reply({ content: "Escolha um canal de texto privado, invisível para @everyone.", ephemeral: true });
+        await interaction.deferReply({ephemeral:true});
+        const invalid = await validateLogChannel(interaction.guild, channel.id);
+        if (invalid) {
+          await interaction.editReply(invalid);
           return;
         }
-        this.logChannelId = resolved.id;
-        this.queueSave();
-        await interaction.reply({ content: `Canal de segurança configurado: <#${resolved.id}>.`, ephemeral: true });
+        await saveLogRoute(interaction.guild.id, "security", channel.id);
+        await interaction.editReply("Canal de segurança configurado: <#" + channel.id + ">.");
         await this.alert(interaction.guild, "Canal de segurança configurado", "Este canal receberá os incidentes privados do Shield.");
         return;
       }

@@ -58,6 +58,9 @@ import { closePersistence, persistenceMode, recordTicketEvent, recordTicketRatin
 import { buildAdminPanel, buildAdminSecurityConfigPanel, type AdminSection } from "./admin-panel.js";
 import { interactionMetrics } from "./diagnostics-core.js";
 import { deliverDiscordAudit } from "./discord-audit.js";
+import { isLogRouteKind } from "./audit-core.js";
+import { saveLogRoute, validateLogChannel } from "./log-routing.js";
+import { buildLogRoutingPanel, buildLogRoutePicker } from "./log-panel.js";
 import { getRobloxBridgeStats, registerRobloxBridgeRoutes, robloxBridgeConfigured } from "./roblox-bridge.js";
 import {
   buildRulesEmbed,
@@ -1101,7 +1104,7 @@ async function handleInteraction(interaction: Interaction) {
         await respond(interaction, { content: "⛔ Este painel é exclusivo da administração autorizada.", ephemeral: true });
         return;
       }
-      await respond(interaction, { ...(await buildAdminPanel(client, interaction.guild, "home", shield.panelState())), ephemeral: true });
+      await respond(interaction, { ...(await buildAdminPanel(client, interaction.guild, "home", shield.panelState(interaction.guild.id))), ephemeral: true });
       return;
     }
 
@@ -1418,6 +1421,46 @@ async function handleInteraction(interaction: Interaction) {
     return;
   }
 
+  if ((interaction.isButton() || interaction.isChannelSelectMenu()) && interaction.customId.startsWith("log_route_")) {
+    const guild = interaction.guild;
+    if (!guild || !shield.isOwner(interaction.user.id) || !shield.isTargetGuild(guild.id)) {
+      await interaction.reply({content:"⛔ Configuração de logs exclusiva do proprietário no servidor autorizado.",ephemeral:true});
+      return;
+    }
+    const [action, rawKind] = interaction.customId.split(":");
+    if (!rawKind || !isLogRouteKind(rawKind) || !((interaction.isButton() && (action === "log_route_pick" || action === "log_route_reset")) || (interaction.isChannelSelectMenu() && action === "log_route_select"))) {
+      await interaction.reply({content:"Ação de logs inválida.",ephemeral:true});
+      return;
+    }
+    await interaction.deferUpdate();
+    const legacy = shield.logChannelId || null;
+    if (action === "log_route_pick") {
+      await interaction.editReply(await buildLogRoutePicker(guild, legacy, rawKind));
+      return;
+    }
+    const id = interaction.isChannelSelectMenu() ? interaction.values[0] : null;
+    if (id === undefined) {
+      await interaction.editReply(await buildLogRoutePicker(guild, legacy, rawKind, "⚠️ Selecione um canal."));
+      return;
+    }
+    if (id) {
+      const invalid = await validateLogChannel(guild, id);
+      if (invalid) {
+        await interaction.editReply(await buildLogRoutePicker(guild, legacy, rawKind, "⚠️ " + invalid));
+        return;
+      }
+    }
+    try {
+      const storage = await saveLogRoute(guild.id, rawKind, id);
+      const notice = (id ? "✅ Destino salvo: <#" + id + ">." : "✅ Destino padrão restaurado.") +
+        (storage === "local" && process.env.DATABASE_URL ? " Banco indisponível; salvo localmente." : storage === "database" ? " Salvo no banco; arquivo local indisponível." : "");
+      await interaction.editReply(await buildLogRoutingPanel(guild, legacy, notice));
+    } catch {
+      await interaction.editReply(await buildLogRoutePicker(guild, legacy, rawKind, "⚠️ Não consegui confirmar o salvamento. Confira o armazenamento e atualize antes de tentar novamente."));
+    }
+    return;
+  }
+
   if (!interaction.isButton()) return;
 
   if (interaction.customId === "verification_check") {
@@ -1446,12 +1489,12 @@ async function handleInteraction(interaction: Interaction) {
 
     const action = interaction.customId.split(":")[1] ?? "";
     if (action === "config") {
-      await interaction.update(buildAdminSecurityConfigPanel(interaction.guild, shield.panelState()));
+      await interaction.update(buildAdminSecurityConfigPanel(interaction.guild, shield.panelState(interaction.guild.id)));
       return;
     }
     if (action === "back") {
       await interaction.deferUpdate();
-      await interaction.editReply(await buildAdminPanel(client, interaction.guild, "security", shield.panelState()));
+      await interaction.editReply(await buildAdminPanel(client, interaction.guild, "security", shield.panelState(interaction.guild.id)));
       return;
     }
 
@@ -1513,9 +1556,9 @@ async function handleInteraction(interaction: Interaction) {
       const result = await shield.panelAction(interaction.guild, interaction.user.id, action);
       const onConfigPage = action === "verification_disable";
       if (onConfigPage) {
-        await interaction.editReply(buildAdminSecurityConfigPanel(interaction.guild, shield.panelState()));
+        await interaction.editReply(buildAdminSecurityConfigPanel(interaction.guild, shield.panelState(interaction.guild.id)));
       } else {
-        await interaction.editReply(await buildAdminPanel(client, interaction.guild, "security", shield.panelState()));
+        await interaction.editReply(await buildAdminPanel(client, interaction.guild, "security", shield.panelState(interaction.guild.id)));
       }
       if (result.content || result.embeds?.length) {
         await interaction.followUp({ content: result.content, embeds: result.embeds, ephemeral: true, allowedMentions: { parse: [] } });
@@ -1539,13 +1582,22 @@ async function handleInteraction(interaction: Interaction) {
       await interaction.update({ content: "Painel administrativo fechado.", embeds: [], components: [] });
       return;
     }
+    if (rawSection === "log_routes") {
+      if (!shield.isOwner(interaction.user.id) || !shield.isTargetGuild(interaction.guild.id)) {
+        await interaction.reply({content:"Configuração de logs exclusiva do proprietário no servidor autorizado.",ephemeral:true});
+        return;
+      }
+      await interaction.deferUpdate();
+      await interaction.editReply(await buildLogRoutingPanel(interaction.guild, shield.logChannelId || null));
+      return;
+    }
     if (rawSection === "diagnostics" && (!shield.isOwner(interaction.user.id) || !shield.isTargetGuild(interaction.guild.id))) {
       await interaction.reply({ content: "Diagnóstico disponível apenas ao proprietário configurado, no servidor autorizado.", ephemeral: true });
       return;
     }
     const section: AdminSection = rawSection === "roblox" || rawSection === "logs" || rawSection === "tickets" || rawSection === "security" || rawSection === "diagnostics" ? rawSection : "home";
     await interaction.deferUpdate();
-    await interaction.editReply(await buildAdminPanel(client, interaction.guild, section, shield.panelState()));
+    await interaction.editReply(await buildAdminPanel(client, interaction.guild, section, shield.panelState(interaction.guild.id)));
     return;
   }
 
@@ -1730,7 +1782,7 @@ client.once(Events.ClientReady, async (readyClient) => {
 // Auditoria exata do Discord: independente do modo de punição do Shield.
 client.on(Events.GuildAuditLogEntryCreate, (entry, guild) => {
   if (!shield.isTargetGuild(guild.id)) return;
-  void deliverDiscordAudit(entry, guild, shield.panelState().logChannelId)
+  void deliverDiscordAudit(entry, guild, shield.logChannelId || null)
     .catch(() => console.warn("Gerais Audit: falha ao processar entrada de auditoria."));
 });
 
@@ -1845,11 +1897,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isRepliable()) {
       // A deferred reply has an outstanding response; a deferred update refers
       // to the existing panel, which must never be replaced by an error.
-      const updatesPanel = interaction.isButton() && (
+      const updatesPanel = ((interaction.isButton() || interaction.isChannelSelectMenu()) && interaction.customId.startsWith("log_route_")) || (interaction.isButton() && (
         interaction.customId.startsWith("admin_panel:") ||
         ["back", "toggle", "mode", "safe", "snapshot_create", "release", "test", "verification_disable"]
           .some((action) => interaction.customId === "admin_security:" + action)
-      );
+      ));
       if (interaction.deferred && !interaction.replied && !updatesPanel) {
         await interaction.editReply({ content: message.content, allowedMentions: message.allowedMentions }).catch(() => undefined);
       } else if (interaction.replied || interaction.deferred) {

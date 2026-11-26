@@ -12,3 +12,19 @@ test("cargos exibem nome e ID sem gerar menções", () => {
   assert.equal(safeAuditText("@everyone"), "\\@everyone");
   assert.equal(roleChangeList([]), "Não informado");
 });
+
+import { effectiveLogRoute, normalizeLogRoutes, isLogRouteKind } from "../src/audit-core.ts";
+test("painel substitui env por categoria sem alterar as demais", () => {
+  const env = {DISCORD_ROLE_LOG_CHANNEL_ID:"env-role",GERAIS_LOG_CHANNEL_ID:"env-general"};
+  assert.equal(effectiveLogRoute("role",{role:"panel-role",general:"panel-general"},env,"shield"),"panel-role");
+  assert.equal(effectiveLogRoute("role",{general:"panel-general"},env,"shield"),"env-role");
+  assert.equal(effectiveLogRoute("channel",{general:"panel-general"},env,"shield"),"panel-general");
+  assert.equal(effectiveLogRoute("security",{security:"panel-security"},env,"shield"),"panel-security");
+  assert.equal(effectiveLogRoute("security",{},env,"shield"),"shield");
+  assert.equal(effectiveLogRoute("member",{}, {}, null),null);
+});
+test("configuração persistida aceita apenas categorias e IDs válidos", () => {
+  assert.deepEqual(normalizeLogRoutes({role:"123456789012345678",channel:"wrong",other:"123456789012345678"}),{role:"123456789012345678"});
+  assert.equal(isLogRouteKind("security"),true);
+  assert.equal(isLogRouteKind("unknown"),false);
+});

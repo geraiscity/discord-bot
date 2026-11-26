@@ -10,6 +10,7 @@ import {
 import { getRecentRobloxEvents, getRobloxBridgeStats, robloxBridgeConfigured } from "./roblox-bridge.js";
 import { parseTicketTopic } from "./ticket-meta.js";
 import { buildDiagnosticsEmbed } from "./diagnostics.js";
+import { resolveLogRoute } from "./log-routing.js";
 
 export type AdminSection = "home" | "roblox" | "logs" | "tickets" | "security" | "diagnostics";
 
@@ -163,6 +164,7 @@ export async function buildAdminPanel(
   }
 
   if (section === "logs") {
+    const auditGeneral = await resolveLogRoute(guild.id, "general", securityState?.logChannelId ?? null);
     const recent = getRecentRobloxEvents(10);
     const lines = recent.length
       ? recent.map((event) => {
@@ -176,12 +178,12 @@ export async function buildAdminPanel(
       .setTitle("📋 Eventos recentes")
       .setDescription(lines.slice(0, 3900))
       .addFields(
-        { name: "gerais-logs", value: process.env.GERAIS_LOG_CHANNEL_ID ? `<#${process.env.GERAIS_LOG_CHANNEL_ID}>` : "Não configurado", inline: true },
-        { name: "security-alerts", value: process.env.SECURITY_ALERT_CHANNEL_ID ? `<#${process.env.SECURITY_ALERT_CHANNEL_ID}>` : process.env.SECURITY_LOG_CHANNEL_ID ? `<#${process.env.SECURITY_LOG_CHANNEL_ID}>` : "Não configurado", inline: true },
+        { name: "Auditoria geral Discord", value: auditGeneral ? `<#${auditGeneral}>` : "Não configurado", inline: true },
+        { name: "security-alerts", value: securityState?.logChannelId ? `<#${securityState.logChannelId}>` : "Não configurado", inline: true },
         { name: "transcripts", value: process.env.TRANSCRIPT_CHANNEL_ID ? `<#${process.env.TRANSCRIPT_CHANNEL_ID}>` : process.env.TICKET_LOG_CHANNEL_ID ? `<#${process.env.TICKET_LOG_CHANNEL_ID}>` : "Não configurado", inline: true },
       )
       .setTimestamp();
-    return { embeds: [embed], components: navigation(section) };
+    return { embeds: [embed], components: [...navigation(section), new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId("admin_panel:log_routes").setLabel("Configurar canais de logs").setEmoji("⚙️").setStyle(ButtonStyle.Primary))] };
   }
 
   if (section === "tickets") {

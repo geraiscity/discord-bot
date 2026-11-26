@@ -1,5 +1,6 @@
 import { AuditLogEvent, ChannelType, EmbedBuilder, PermissionFlagsBits, PermissionsBitField, type Guild, type GuildAuditLogsEntry } from "discord.js";
-import { auditDestination, roleChangeList, safeAuditText } from "./audit-core.js";
+import { roleChangeList, safeAuditText } from "./audit-core.js";
+import { resolveLogRoute } from "./log-routing.js";
 
 type Kind = "channel" | "role" | "member" | "server";
 const actions = new Map<number, [Kind, string]>([
@@ -54,7 +55,7 @@ export async function deliverDiscordAudit(entry: GuildAuditLogsEntry, guild: Gui
   const action = actions.get(entry.action);
   if (!action) return;
   const [kind,title] = action;
-  const destination = auditDestination(kind, process.env, shieldChannel);
+  const destination = await resolveLogRoute(guild.id, kind, shieldChannel);
   const delivery = stats.get(guild.id) ?? {sent:0,failed:0};
   stats.set(guild.id, delivery);
   const channel = destination ? await guild.channels.fetch(destination).catch(() => null) : null;
