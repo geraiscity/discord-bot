@@ -61,8 +61,9 @@ import { closePersistence, persistenceMode, recordTicketEvent, recordTicketRatin
 import { buildAdminPanel, buildAdminSecurityConfigPanel, type AdminSection } from "../panels/admin-panel.js";
 import { interactionMetrics } from "../diagnostics/interaction-metrics.js";
 import {loadGuildSnapshot} from "../backups/snapshot.js";
-import { deliverDiscordAudit } from "../audit/discord-audit.js";
-import {auditQueue} from "../performance/work-queue.js";
+import {buildTicketTranscript} from "../tickets/transcripts.js";
+import {registerSecurityEvents} from "../events/security-events.js";
+import {auditQueue,bridgeQueue} from "../performance/work-queue.js";
 import { isLogRouteKind } from "../audit/audit-core.js";
 import { saveLogRoute, validateLogChannel } from "../audit/log-routing.js";
 import { buildLogRoutingPanel, buildLogRoutePicker } from "../panels/log-panel.js";
@@ -473,40 +474,6 @@ function parseSnowflakeReference(value: string): string | null {
 
 async function updateTicketTopic(channel: TextChannel, meta: TicketMeta): Promise<void> {
   await channel.setTopic(buildTicketTopic(meta), "Atendimento: metadados do atendimento");
-}
-
-async function buildTicketTranscript(channel: TextChannel, maxMessages = 500): Promise<Buffer> {
-  const messages: Message[] = [];
-  let before: string | undefined;
-  while (messages.length < maxMessages) {
-    const page = await channel.messages.fetch({ limit: Math.min(100, maxMessages - messages.length), before }).catch(() => null);
-    if (!page) throw new Error("Não consegui ler todo o histórico do ticket. Confira a permissão Ler Histórico de Mensagens. O ticket foi preservado.");
-    if (!page.size) break;
-    messages.push(...page.values());
-    before = page.last()?.id;
-    if (page.size < 100) break;
-  }
-  if (messages.length >= maxMessages && before) {
-    const older = await channel.messages.fetch({ limit: 1, before }).catch(() => null);
-    if (!older || older.size > 0) {
-      throw new Error("O histórico excede o limite de exportação ou não pôde ser verificado. O ticket permanecerá aberto para evitar perda de mensagens.");
-    }
-  }
-  messages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
-  const lines = [
-    `Transcript de Ticket`,
-    `Canal: #${channel.name} (${channel.id})`,
-    `Servidor: ${channel.guild.name} (${channel.guild.id})`,
-    `Gerado em: ${new Date().toISOString()}`,
-    "=".repeat(72),
-  ];
-  for (const message of messages) {
-    const content = message.content || "[sem texto]";
-    const attachments = [...message.attachments.values()].map((item) => item.url);
-    lines.push(`[${new Date(message.createdTimestamp).toISOString()}] ${message.author.tag} (${message.author.id}): ${content}`);
-    if (attachments.length) lines.push(`  Anexos: ${attachments.join(" | ")}`);
-  }
-  return Buffer.from(lines.join("\n"), "utf8");
 }
 
 async function privateGeneralLogChannel(guild: NonNullable<Interaction["guild"]>): Promise<TextChannel | null> {
@@ -1826,80 +1793,8 @@ client.once(Events.ClientReady, async (readyClient) => {
   }
 });
 
-// Auditoria exata do Discord: independente do modo de punição do Shield.
-client.on(Events.GuildAuditLogEntryCreate, (entry, guild) => {
-  if (!shield.isTargetGuild(guild.id)) return;
-  void shield.auditWebhook(guild, entry).catch(() => console.warn("Shield: falha na análise de webhook."));
-  if(!auditQueue.submit(()=>deliverDiscordAudit(entry,guild,shield.logChannelId||null))) console.warn("Auditoria: fila cheia; evento não processado.");
-});
+registerSecurityEvents(client,shield);
 
-// A proteção passiva é independente dos slash commands e continua ativa 24h
-// enquanto o cliente Discord estiver conectado.
-client.on(Events.GuildMemberAdd, (member) => {
-  void shield.memberJoin(member).catch((error) => console.error("Shield/entrada:", error));
-});
-client.on(Events.GuildMemberRemove, (member) => {
-  void shield.memberRemove(member).catch((error) => console.error("Shield/saída-kick:", error));
-});
-client.on(Events.MessageCreate, (message) => {
-  void shield.message(message).catch((error) => console.error("Shield/mensagem:", error));
-});
-client.on(Events.ChannelUpdate, (before, after) => {
-  if (before.isDMBased() || after.isDMBased()) return;
-  void shield.channelUpdate(before, after).catch((error) => console.error("Shield/canal:", error));
-});
-client.on(Events.ChannelCreate, (channel) => {
-  if (channel.isDMBased()) return;
-  void shield.creationAction(channel.guild, AuditLogEvent.ChannelCreate, channel.id, "criação de canal", async () => channel.delete("Shield: criação em massa / anti-cópia"))
-    .catch((error) => console.error("Shield/criação de canal:", error));
-});
-client.on(Events.ChannelDelete, (channel) => {
-  if (channel.isDMBased()) return;
-  void shield.destructiveAction(channel.guild, AuditLogEvent.ChannelDelete, channel.id, "exclusão de canal")
-    .catch((error) => console.error("Shield/exclusão de canal:", error));
-});
-client.on(Events.GuildRoleCreate, (role) => {
-  void shield.creationAction(role.guild, AuditLogEvent.RoleCreate, role.id, "criação de cargo", async () => role.delete("Shield: criação em massa / anti-cópia"))
-    .catch((error) => console.error("Shield/criação de cargo:", error));
-});
-client.on(Events.GuildRoleDelete, (role) => {
-  void shield.destructiveAction(role.guild, AuditLogEvent.RoleDelete, role.id, "exclusão de cargo")
-    .catch((error) => console.error("Shield/exclusão de cargo:", error));
-});
-client.on(Events.GuildBanAdd, (ban) => {
-  void shield.destructiveAction(ban.guild, AuditLogEvent.MemberBanAdd, ban.user.id, "banimento")
-    .catch((error) => console.error("Shield/banimento:", error));
-});
-client.on(Events.GuildMemberUpdate, (before, after) => {
-  void shield.memberUpdate(before, after).catch((error) => console.error("Shield/permissão de membro:", error));
-});
-client.on(Events.InviteCreate, (invite) => {
-  void shield.inviteCreate(invite).catch((error) => console.error("Shield/convite:", error));
-});
-client.on(Events.GuildRoleUpdate, (before, after) => {
-  void shield.roleUpdate(before, after).catch((error) => console.error("Shield/cargo:", error));
-});
-client.on(Events.GuildUpdate, (before, after) => {
-  void shield.guildUpdate(before, after).catch((error) => console.error("Shield/servidor:", error));
-});
-client.on(Events.GuildEmojiCreate, (emoji) => {
-  void shield.creationAction(emoji.guild, AuditLogEvent.EmojiCreate, emoji.id, "criação de emoji", async () => emoji.delete("Shield: criação em massa / anti-cópia"))
-    .catch((error) => console.error("Shield/criação de emoji:", error));
-});
-client.on(Events.GuildEmojiDelete, (emoji) => {
-  void shield.destructiveAction(emoji.guild, AuditLogEvent.EmojiDelete, emoji.id, "exclusão de emoji")
-    .catch((error) => console.error("Shield/exclusão de emoji:", error));
-});
-client.on(Events.GuildStickerCreate, (sticker) => {
-  if (!sticker.guild) return;
-  void shield.creationAction(sticker.guild, AuditLogEvent.StickerCreate, sticker.id, "criação de sticker", async () => sticker.delete("Shield: criação em massa / anti-cópia"))
-    .catch((error) => console.error("Shield/criação de sticker:", error));
-});
-client.on(Events.GuildStickerDelete, (sticker) => {
-  if (!sticker.guild) return;
-  void shield.destructiveAction(sticker.guild, AuditLogEvent.StickerDelete, sticker.id, "exclusão de sticker")
-    .catch((error) => console.error("Shield/exclusão de sticker:", error));
-});
 client.on(Events.InteractionCreate, async (interaction) => {
   const started = performance.now();
   let failed = false;
@@ -2045,7 +1940,8 @@ async function shutdown(signal: string): Promise<void> {
   console.log(`Encerramento gracioso iniciado por ${signal}.`);
 
   client.destroy();
-
+  const drained=await Promise.all([auditQueue.drain(),bridgeQueue.drain()]);
+  if(drained.some(ok=>!ok))console.warn("Encerramento: tarefas ainda pendentes.");
   await shield.flushState();
   await closePersistence();
 

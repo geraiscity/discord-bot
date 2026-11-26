@@ -10,6 +10,7 @@ import {
 } from "discord.js";
 import { recordRobloxEvent } from "../database/persistence.js";
 import {bridgeQueue} from "../performance/work-queue.js";
+import {acceptsProtocol} from "./protocol.js";
 import {resolveLogRoute} from "../audit/log-routing.js";
 
 export type RobloxLogSeverity = "info" | "warning" | "suspicious" | "critical";
@@ -383,8 +384,8 @@ export function registerRobloxBridgeRoutes(app: Express, client: Client): void {
       res.status(400).json({ ok: false, error: "invalid_event" });
       return;
     }
-    const body=safeObject(req.body);const v2=body.protocol===2;
-    if((process.env.ROBLOX_BRIDGE_REQUIRE_V2==="true"&&!v2)||(v2&&(typeof body.sentAt!=="number"||!Number.isFinite(body.sentAt)||Math.abs(Date.now()-body.sentAt)>120000||typeof body.eventId!=="string"||! /^[a-f0-9-]{36}$/i.test(body.eventId)))){stats.rejected++;res.status(400).json({ok:false,error:"invalid_protocol_or_timestamp"});return;}
+    const body=safeObject(req.body);
+    if(!acceptsProtocol(body,process.env.ROBLOX_BRIDGE_REQUIRE_V2==="true")){stats.rejected++;res.status(400).json({ok:false,error:"invalid_protocol_or_timestamp"});return;}
     const places=(process.env.ROBLOX_BRIDGE_ALLOWED_PLACE_IDS??"").split(",").map(x=>x.trim()).filter(Boolean);
     if(places.length&&!places.includes(event.server?.placeId??"")){stats.rejected++;res.status(403).json({ok:false,error:"place_not_allowed"});return;}
     const serverKey="job:"+(event.server?.jobId||"unknown");

@@ -1,6 +1,6 @@
 # Arquitetura V1.4
 O ponto de entrada continua em src/index.ts; o diretório de trabalho da hospedagem não mudou. Os módulos foram separados por domínio: core, config, commands, security, audit, backups, diagnostics, performance, database, tickets, verification, roblox, panels e communication.
-A implementação de interações e parte dos tickets ainda está em core/bootstrap.ts; a extração deve ser gradual, com testes.
+Eventos de segurança e transcripts agora estão em events/ e tickets/. A implementação de interações e parte dos tickets ainda está em core/bootstrap.ts; a extração deve ser gradual, com testes.
 Dados e nomes internos legados foram preservados para compatibilidade.
 ## Validação antes de produção
 - npm install; npm run build; npm run typecheck; npm test.

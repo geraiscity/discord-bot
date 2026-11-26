@@ -13,6 +13,7 @@ export class WorkQueue {
     this.pump();return true;
   }
   private pump(){while(this.active<this.concurrency&&this.waiting.length)this.waiting.shift()!();}
+  async drain(timeoutMs=8000):Promise<boolean>{const end=Date.now()+timeoutMs;while(this.active||this.waiting.length){if(Date.now()>=end)return false;await new Promise<void>(resolve=>setTimeout(resolve,50));}return true;}
   stats(){return {active:this.active,waiting:this.waiting.length,dropped:this.dropped,failed:this.failed};}
 }
 export const auditQueue=new WorkQueue(4,1000);

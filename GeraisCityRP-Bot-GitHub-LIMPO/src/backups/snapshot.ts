@@ -251,11 +251,6 @@ export async function restoreGuildSnapshot(guild:Guild,snapshot:GuildSnapshot,sc
   for (const saved of snapshot.channels.filter((channel) => channel.type === ChannelType.GuildCategory)) await createOne(saved);
   for (const saved of snapshot.channels.filter((channel) => channel.type !== ChannelType.GuildCategory)) await createOne(saved);
 
-  const everyone = guild.roles.everyone;
-  if (everyone.permissions.has(PermissionFlagsBits.Administrator)) {
-    await everyone.setPermissions(everyone.permissions.remove(PermissionFlagsBits.Administrator), "Shield: proteção do @everyone").catch(() => undefined);
-  }
-
   return { rolesCreated, channelsCreated, skipped };
   }finally{busy.delete(guild.id);}
 }
