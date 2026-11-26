@@ -235,7 +235,7 @@ export class GeraisShield {
             { name: "Anti-cópia", value: securityEnvironment.antiCopy ? "Ativo" : "Desativado", inline: true },
             { name: "Risk Score", value: `Limite: **${securityEnvironment.riskThreshold}**`, inline: true },
             { name: "Anti-nuke", value: `${securityEnvironment.destructiveThreshold} ações / 30s`, inline: true },
-            { name: "Logs", value: this.logChannelId ? `<#${this.logChannelId}>` : "DM do proprietário", inline: false },
+            { name: "Logs", value: this.logChannelId ? `<#${this.logChannelId}>` : "Não configurado (sem mensagens privadas)", inline: false },
             { name: "Snapshot", value: snapshot ? `Salvo <t:${Math.floor(snapshot.createdAt / 1000)}:R> • ${snapshot.roles.length} cargos • ${snapshot.channels.length} canais` : "Nenhum snapshot salvo", inline: false },
             { name: "Verificação", value: verification?.enabled ? `Ativa em <#${verification.channelId}> → <@&${verification.roleId}>` : "Não configurada/desativada", inline: false },
             { name: "Persistência", value: storage === "postgresql" ? "PostgreSQL + fallback local" : "Arquivo local", inline: true },
@@ -463,7 +463,7 @@ export class GeraisShield {
       this.enabled = false;
       console.error("GERAIS SHIELD FINAL DESATIVADO: configure SECURITY_OWNER_ID.");
     }
-    if (!this.logChannelId) console.warn("Gerais Shield Final: sem canal de logs; tentarei DM ao proprietário.");
+    if (!this.logChannelId) console.warn("Gerais Shield Final: sem canal de logs; incidentes ficam no histórico, sem mensagens privadas.");
 
     for (const guild of this.client.guilds.cache.values()) {
       if (!this.isTargetGuild(guild.id)) continue;
@@ -538,17 +538,13 @@ export class GeraisShield {
     if (this.logChannelId) {
       const channel = await guild.channels.fetch(this.logChannelId).catch(() => null);
       if (channel?.type === ChannelType.GuildText) {
-        if (!channel.permissionsFor(guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel)) {
+        if (channel.permissionsFor(guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel) === false) {
           const ok = await channel.send({ embeds: [embed], allowedMentions: { parse: [] } }).then(() => true).catch(() => false);
           if (ok) return;
         } else if (!this.isCooling(`public_logs:${guild.id}`, 3600_000)) {
           console.error("Gerais Shield Final: canal de logs está público. Recusando publicar nele.");
         }
       }
-    }
-    if (securityEnvironment.ownerId) {
-      const owner = await this.client.users.fetch(securityEnvironment.ownerId).catch(() => null);
-      if (owner && await owner.send({ embeds: [embed], allowedMentions: { parse: [] } }).then(() => true).catch(() => false)) return;
     }
     console.warn(`[Gerais Shield Final] ${guild.id} ${title}: alerta privado não entregue.`);
   }
@@ -665,7 +661,7 @@ export class GeraisShield {
               { name: "Anti-nuke", value: `${securityEnvironment.destructiveThreshold} ações / 30s`, inline: true },
               { name: "Anti-clone", value: `${securityEnvironment.creationThreshold} criações / 30s`, inline: true },
               { name: "2FA da moderação", value: Number(interaction.guild.mfaLevel) >= 1 ? "Exigido pelo servidor" : "Não exigido — recomendado ativar no Discord", inline: false },
-              { name: "Logs", value: this.logChannelId ? `<#${this.logChannelId}>` : "DM do proprietário", inline: false },
+              { name: "Logs", value: this.logChannelId ? `<#${this.logChannelId}>` : "Não configurado (sem mensagens privadas)", inline: false },
               { name: "Snapshot", value: snapshot ? `Salvo <t:${Math.floor(snapshot.createdAt / 1000)}:R> • ${snapshot.roles.length} cargos • ${snapshot.channels.length} canais` : "Nenhum snapshot salvo", inline: false },
               { name: "Verificação", value: verification?.enabled ? `Ativa em <#${verification.channelId}> → <@&${verification.roleId}>` : "Não configurada/desativada", inline: false },
               { name: "Bots permitidos", value: `${this.allowedBotIds.size}`, inline: true },
@@ -714,7 +710,7 @@ export class GeraisShield {
       if (subcommand === "teste") {
         await interaction.deferReply({ ephemeral: true });
         await this.alert(interaction.guild, "Alerta de teste", "✅ O canal privado de segurança está recebendo alertas.");
-        await interaction.editReply("Alerta enviado. Confira o canal de segurança ou sua DM.");
+        await interaction.editReply("Teste registrado. Confira o canal de segurança e o diagnóstico de entrega.");
         return;
       }
     }
@@ -1057,7 +1053,7 @@ export class GeraisShield {
     const actorId = await this.executorFromAudit(guild, type, targetId);
     if (actorId && (this.isOwner(actorId) || actorId === this.client.user?.id)) return;
     const count = actorId ? this.destructive.record(`${guild.id}:${actorId}`) : 0;
-    if (!actorId || count === 1 || count === securityEnvironment.destructiveThreshold || count % 5 === 0) {
+    if (!actorId || count === securityEnvironment.destructiveThreshold || (count >= securityEnvironment.destructiveThreshold && count % 5 === 0)) {
       await this.alert(guild, `Ação administrativa: ${label}`, `Alvo: \`${targetId}\` • responsável: ${actorId ? `<@${actorId}>` : "não identificado"}.${actorId ? ` ${count} ação(ões) destrutiva(s) em 30 segundos.` : " Confira o Audit Log."}`, count >= securityEnvironment.destructiveThreshold);
     }
     if (actorId && count >= securityEnvironment.destructiveThreshold && this.canAutomate() && !this.contained.has(`${guild.id}:${actorId}`)) {
@@ -1072,7 +1068,7 @@ export class GeraisShield {
     const actorId = await this.executorFromAudit(guild, type, targetId);
     if (actorId && (this.isOwner(actorId) || actorId === this.client.user?.id)) return;
     const count = actorId ? this.creations.record(`${guild.id}:${actorId}`) : 0;
-    if (!actorId || count === 1 || count === securityEnvironment.creationThreshold) {
+    if (!actorId || count === securityEnvironment.creationThreshold) {
       await this.alert(guild, `Anti-cópia: ${label}`, `Alvo: \`${targetId}\` • responsável: ${actorId ? `<@${actorId}>` : "não identificado"}.${actorId ? ` ${count} criação(ões) em 30 segundos.` : ""}`, count >= securityEnvironment.creationThreshold);
     }
     if (actorId && count >= securityEnvironment.creationThreshold && this.canAutomate()) {

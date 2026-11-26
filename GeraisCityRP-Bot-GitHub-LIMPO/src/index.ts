@@ -57,6 +57,7 @@ import { oauthVerificationConfigured, registerVerificationOAuthRoutes } from "./
 import { closePersistence, persistenceMode, recordTicketEvent, recordTicketRating } from "./persistence.js";
 import { buildAdminPanel, buildAdminSecurityConfigPanel, type AdminSection } from "./admin-panel.js";
 import { interactionMetrics } from "./diagnostics-core.js";
+import { deliverDiscordAudit } from "./discord-audit.js";
 import { getRobloxBridgeStats, registerRobloxBridgeRoutes, robloxBridgeConfigured } from "./roblox-bridge.js";
 import {
   buildRulesEmbed,
@@ -1724,6 +1725,13 @@ client.once(Events.ClientReady, async (readyClient) => {
   } catch (error) {
     console.error("Falha ao registrar/sincronizar comandos Discord:", error);
   }
+});
+
+// Auditoria exata do Discord: independente do modo de punição do Shield.
+client.on(Events.GuildAuditLogEntryCreate, (entry, guild) => {
+  if (!shield.isTargetGuild(guild.id)) return;
+  void deliverDiscordAudit(entry, guild, shield.panelState().logChannelId)
+    .catch(() => console.warn("Gerais Audit: falha ao processar entrada de auditoria."));
 });
 
 // A proteção passiva é independente dos slash commands e continua ativa 24h
