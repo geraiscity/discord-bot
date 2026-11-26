@@ -1,6 +1,6 @@
-# Gerais City RP Bot
+# Bot Discord
 
-Versão limpa/standalone do bot Discord do Gerais City RP, preparada para GitHub e hospedagem fora do Replit.
+Versão limpa/standalone do bot Discord do servidor, preparada para GitHub e hospedagem fora do Replit.
 
 ## Estrutura
 

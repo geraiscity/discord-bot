@@ -1,4 +1,4 @@
--- Gerais City RP • Roblox -> Discord Bridge
+-- Roblox -> Discord Bridge
 -- Coloque este ModuleScript em ServerScriptService.
 -- NUNCA coloque a chave em LocalScript, ReplicatedStorage ou qualquer lugar replicado ao cliente.
 -- Ative: Game Settings > Security > Allow HTTP Requests.
@@ -54,11 +54,11 @@ function Bridge.Send(eventName, severity, player, data)
 	end)
 
 	if not ok then
-		warn("[Gerais Bridge] Falha HTTP:", result)
+		warn("[Roblox Bridge] Falha HTTP:", result)
 		return false
 	end
 	if not result.Success then
-		warn("[Gerais Bridge] API recusou:", result.StatusCode, result.Body)
+		warn("[Roblox Bridge] API recusou:", result.StatusCode, result.Body)
 		return false
 	end
 	return true

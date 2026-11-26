@@ -24,7 +24,7 @@ export const commandDefinitions = [
 
   new SlashCommandBuilder()
     .setName("painel-admin")
-    .setDescription("Abre o Gerais Control Center privado.")
+    .setDescription("Abre o Painel administrativo privado.")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()),
 
   new SlashCommandBuilder()

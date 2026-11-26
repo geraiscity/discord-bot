@@ -148,7 +148,7 @@ export async function buildAdminPanel(
       .setColor(0x3498db)
       .setAuthor({ name: "CENTRAL ADMINISTRATIVA" })
       .setTitle("🎮 Roblox Bridge")
-      .setDescription("Visão operacional da comunicação Roblox → Gerais Bot.")
+      .setDescription("Visão operacional da comunicação Roblox → Bot Discord.")
       .addFields(
         { name: "Bridge", value: robloxBridgeConfigured() ? "🟢 Configurado" : "🔴 Sem ROBLOX_BRIDGE_SECRET", inline: true },
         { name: "Eventos recebidos", value: String(bridge.received), inline: true },
@@ -240,7 +240,7 @@ export async function buildAdminPanel(
     .setTitle("⚙️ Painel Administrativo")
     .setDescription("Central privada do Discord + Roblox. Use os botões abaixo para navegar sem criar dezenas de comandos e canais.")
     .addFields(
-      { name: "Gerais Bot", value: client.isReady() ? `🟢 Online • ${client.ws.ping}ms` : "🔴 Desconectado", inline: true },
+      { name: "Bot Discord", value: client.isReady() ? `🟢 Online • ${client.ws.ping}ms` : "🔴 Desconectado", inline: true },
       { name: "Uptime", value: uptimeText(Math.floor(process.uptime())), inline: true },
       { name: "Persistência", value: persistence, inline: true },
       { name: "Roblox Bridge", value: robloxBridgeConfigured() ? `🟢 ${bridge.received} eventos` : "🟡 Aguardando configuração", inline: true },

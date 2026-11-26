@@ -190,30 +190,6 @@ function securitySingleIdModal(customId: string, title: string, label: string, p
     .addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
 }
 
-function securityVerificationModal(): ModalBuilder {
-  const channel = new TextInputBuilder()
-    .setCustomId("canal")
-    .setLabel("ID do canal de verificação")
-    .setPlaceholder("Ex.: 123456789012345678")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setMaxLength(30);
-  const role = new TextInputBuilder()
-    .setCustomId("cargo")
-    .setLabel("ID do cargo entregue")
-    .setPlaceholder("Ex.: 123456789012345678")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setMaxLength(30);
-  return new ModalBuilder()
-    .setCustomId("shield_cfg_verification_publish")
-    .setTitle("Publicar verificação")
-    .addComponents(
-      new ActionRowBuilder<TextInputBuilder>().addComponents(channel),
-      new ActionRowBuilder<TextInputBuilder>().addComponents(role),
-    );
-}
-
 type RepliableInteraction = ChatInputCommandInteraction | ButtonInteraction | StringSelectMenuInteraction | ModalSubmitInteraction;
 type ReplyOptions = InteractionReplyOptions;
 
@@ -494,7 +470,7 @@ function parseSnowflakeReference(value: string): string | null {
 }
 
 async function updateTicketTopic(channel: TextChannel, meta: TicketMeta): Promise<void> {
-  await channel.setTopic(buildTicketTopic(meta), "Gerais Tickets Final: metadados do atendimento");
+  await channel.setTopic(buildTicketTopic(meta), "Atendimento: metadados do atendimento");
 }
 
 async function buildTicketTranscript(channel: TextChannel, maxMessages = 500): Promise<Buffer> {
@@ -2066,7 +2042,7 @@ app.get("/health", respondHealth);
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(
-    `Health monitor do Gerais Bot disponível na porta ${PORT}`
+    `Health monitor do Bot Discord disponível na porta ${PORT}`
   );
 });
 
