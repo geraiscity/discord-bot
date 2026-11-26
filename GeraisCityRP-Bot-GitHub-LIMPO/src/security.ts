@@ -271,8 +271,8 @@ export class GeraisShield {
     }
 
     if (action === "test") {
-      await this.alert(guild, "Alerta de teste", "✅ O canal privado de segurança está recebendo alertas.");
-      return { content: "📣 Alerta de teste enviado." };
+      const delivered = await this.alert(guild, "Alerta de teste", "✅ Teste de entrega do canal privado de segurança.");
+      return { content: delivered ? "📣 Alerta entregue no canal de segurança." : "⚠️ Não consegui entregar o teste. Configure um canal de texto privado e permita Ver Canal, Enviar Mensagens e Incorporar Links ao bot. O incidente foi registrado; nenhuma DM foi enviada." };
     }
 
     if (action === "incidents") {
@@ -526,7 +526,7 @@ export class GeraisShield {
     return incident;
   }
 
-  private async alert(guild: Guild, title: string, details: string, urgent = false): Promise<void> {
+  private async alert(guild: Guild, title: string, details: string, urgent = false): Promise<boolean> {
     const incident = this.recordIncident(guild.id, title, details, urgent);
     const embed = new EmbedBuilder()
       .setColor(urgent ? 0xed4245 : 0xfaa61a)
@@ -540,13 +540,14 @@ export class GeraisShield {
       if (channel?.type === ChannelType.GuildText) {
         if (channel.permissionsFor(guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel) === false) {
           const ok = await channel.send({ embeds: [embed], allowedMentions: { parse: [] } }).then(() => true).catch(() => false);
-          if (ok) return;
+          if (ok) return true;
         } else if (!this.isCooling(`public_logs:${guild.id}`, 3600_000)) {
           console.error("Gerais Shield Final: canal de logs está público. Recusando publicar nele.");
         }
       }
     }
     console.warn(`[Gerais Shield Final] ${guild.id} ${title}: alerta privado não entregue.`);
+    return false;
   }
 
   private startSnapshotLoop(guild: Guild): void {
@@ -709,8 +710,8 @@ export class GeraisShield {
 
       if (subcommand === "teste") {
         await interaction.deferReply({ ephemeral: true });
-        await this.alert(interaction.guild, "Alerta de teste", "✅ O canal privado de segurança está recebendo alertas.");
-        await interaction.editReply("Teste registrado. Confira o canal de segurança e o diagnóstico de entrega.");
+        const delivered = await this.alert(interaction.guild, "Alerta de teste", "✅ Teste de entrega do canal privado de segurança.");
+        await interaction.editReply(delivered ? "Alerta entregue no canal de segurança." : "Não consegui entregar o teste. Confira o canal privado e as permissões do bot. Nenhuma DM foi enviada.");
         return;
       }
     }
