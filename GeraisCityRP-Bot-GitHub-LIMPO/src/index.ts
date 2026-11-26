@@ -62,6 +62,7 @@ import { buildAdminPanel, buildAdminSecurityConfigPanel, type AdminSection } fro
 import { interactionMetrics } from "./diagnostics-core.js";
 import {loadGuildSnapshot} from "./security-snapshot.js";
 import { deliverDiscordAudit } from "./discord-audit.js";
+import {auditQueue} from "./work-queue.js";
 import { isLogRouteKind } from "./audit-core.js";
 import { saveLogRoute, validateLogChannel } from "./log-routing.js";
 import { buildLogRoutingPanel, buildLogRoutePicker } from "./log-panel.js";
@@ -1829,8 +1830,7 @@ client.once(Events.ClientReady, async (readyClient) => {
 client.on(Events.GuildAuditLogEntryCreate, (entry, guild) => {
   if (!shield.isTargetGuild(guild.id)) return;
   void shield.auditWebhook(guild, entry).catch(() => console.warn("Shield: falha na análise de webhook."));
-  void deliverDiscordAudit(entry, guild, shield.logChannelId || null)
-    .catch(() => console.warn("Auditoria Discord: falha ao processar entrada de auditoria."));
+  if(!auditQueue.submit(()=>deliverDiscordAudit(entry,guild,shield.logChannelId||null))) console.warn("Auditoria: fila cheia; evento não processado.");
 });
 
 // A proteção passiva é independente dos slash commands e continua ativa 24h

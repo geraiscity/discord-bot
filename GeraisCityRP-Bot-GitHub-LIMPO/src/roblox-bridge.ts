@@ -9,6 +9,8 @@ import {
   type TextChannel,
 } from "discord.js";
 import { recordRobloxEvent } from "./persistence.js";
+import {bridgeQueue} from "./work-queue.js";
+import {resolveLogRoute} from "./log-routing.js";
 
 export type RobloxLogSeverity = "info" | "warning" | "suspicious" | "critical";
 export type RobloxLogCategory =
@@ -309,11 +311,11 @@ async function dispatch(client: Client, event: RobloxBridgeEvent): Promise<void>
   const guild = await targetGuild(client);
   if (!guild) return;
   const generalId = process.env.GERAIS_LOG_CHANNEL_ID?.trim() || process.env.ROBLOX_LOG_CHANNEL_ID?.trim();
-  const securityId = process.env.SECURITY_ALERT_CHANNEL_ID?.trim() || process.env.SECURITY_LOG_CHANNEL_ID?.trim();
+  const securityId=await resolveLogRoute(guild.id,"security",process.env.SECURITY_ALERT_CHANNEL_ID?.trim()||process.env.SECURITY_LOG_CHANNEL_ID?.trim()||null);
   const embed = buildEventEmbed(event);
 
   if (shouldSendSecurity(event)) {
-    const channel = await resolveTextChannel(client, guild, securityId);
+    const channel = await resolveTextChannel(client, guild, securityId ?? undefined);
     if (channel) await channel.send({ embeds: [embed], allowedMentions: { parse: [] } }).catch(() => undefined);
     return;
   }
@@ -406,8 +408,9 @@ export function registerRobloxBridgeRoutes(app: Express, client: Client): void {
       }
     }
 
+    if(!bridgeQueue.submit(async()=>{
     remember(event);
-    void recordRobloxEvent({
+    await recordRobloxEvent({
       id: event.id,
       guildId: process.env.ROBLOX_BRIDGE_GUILD_ID?.trim() || process.env.DISCORD_GUILD_ID?.trim() || "auto",
       eventType: event.event,
@@ -419,7 +422,8 @@ export function registerRobloxBridgeRoutes(app: Express, client: Client): void {
       payload: { player: event.player ?? null, server: event.server ?? null, data: event.data },
       createdAt: event.receivedAt,
     });
-    void dispatch(client, event);
+    await dispatch(client,event);
+    })) {if(externalId)dedupe.delete(externalId);stats.rejected++;res.status(429).json({ok:false,error:"queue_full"});return;}
     res.status(202).json({ ok: true, id: event.id, severity: event.severity });
   });
 

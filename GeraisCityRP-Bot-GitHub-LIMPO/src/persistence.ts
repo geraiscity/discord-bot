@@ -31,6 +31,7 @@ async function initializePool(): Promise<PgPool | null> {
   try {
     await candidate.query("select 1");
     await candidate.query(`
+      create table if not exists discord_audit_archive (guild_id text not null,id text not null,created_at bigint not null,payload jsonb not null,primary key(guild_id,id));
       create table if not exists gerais_bot_state (
         key text primary key,
         value jsonb not null,
@@ -390,3 +391,5 @@ export async function closePersistence(): Promise<void> {
   pool = null;
   await current.end().catch(() => undefined);
 }
+
+export async function saveAuditArchive(guildId:string,id:string,at:number,payload:unknown):Promise<boolean>{const db=await getPool();if(!db)return false;return db.query("insert into discord_audit_archive(guild_id,id,created_at,payload) values($1,$2,$3,$4::jsonb) on conflict do nothing",[guildId,id,at,JSON.stringify(payload)]).then(()=>true).catch(()=>false);}

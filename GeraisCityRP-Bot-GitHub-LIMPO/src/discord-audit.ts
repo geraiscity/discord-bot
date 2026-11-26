@@ -1,6 +1,7 @@
 import { AuditLogEvent, ChannelType, EmbedBuilder, PermissionFlagsBits, PermissionsBitField, type Guild, type GuildAuditLogsEntry } from "discord.js";
 import { roleChangeList, safeAuditText } from "./audit-core.js";
 import { resolveLogRoute } from "./log-routing.js";
+import {archiveAudit} from "./audit-archive.js";
 
 type Kind = "channel" | "role" | "member" | "server";
 const actions = new Map<number, [Kind, string]>([
@@ -66,10 +67,6 @@ export async function deliverDiscordAudit(entry: GuildAuditLogsEntry, guild: Gui
   stats.set(guild.id, delivery);
   const channel = destination ? await guild.channels.fetch(destination).catch(() => null) : null;
   const me = guild.members.me;
-  if (channel?.type !== ChannelType.GuildText || channel.permissionsFor(guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel) !== false || !me || !channel.permissionsFor(me)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) {
-    delivery.failed++;
-    return;
-  }
   const executor = entry.executor ?? (entry.executorId ? guild.client.users.cache.get(entry.executorId) ?? await guild.client.users.fetch(entry.executorId).catch(() => null) : null);
   const actor = accountName(executor) ?? "Não identificado pelo Discord";
   const changes = entry.changes ?? [];
@@ -99,6 +96,11 @@ export async function deliverDiscordAudit(entry: GuildAuditLogsEntry, guild: Gui
   }
   if (details.length) embed.setDescription(details.join("\n\n").slice(0, 3500));
   embed.setFooter({text:"Auditoria Discord • " + entry.id}).setTimestamp(entry.createdTimestamp);
+  await archiveAudit(guild.id,entry.id,entry.createdTimestamp,embed.toJSON()).catch(()=>undefined);
+  if (channel?.type !== ChannelType.GuildText || channel.permissionsFor(guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel) !== false || !me || !channel.permissionsFor(me)?.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks])) {
+    delivery.failed++;
+    return;
+  }
   try { await channel.send({embeds:[embed],allowedMentions:{parse:[]}}); delivery.sent++; }
   catch { delivery.failed++; }
 }
