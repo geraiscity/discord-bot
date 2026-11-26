@@ -160,12 +160,14 @@ function isAuthorized(req: Request): boolean {
   const expected = process.env.ROBLOX_BRIDGE_SECRET?.trim();
   if (!expected) return false;
   const supplied = String(req.header("x-gerais-bridge-key") ?? "").trim();
-  return Boolean(supplied) && constantTimeEqual(supplied, expected);
+  const previous=process.env.ROBLOX_BRIDGE_PREVIOUS_SECRET?.trim();
+  return Boolean(supplied)&&(constantTimeEqual(supplied,expected)||Boolean(previous&&constantTimeEqual(supplied,previous)));
 }
 
 function allowRate(serverKey: string): boolean {
   const now = Date.now();
-  const max = numberEnv("ROBLOX_BRIDGE_MAX_EVENTS_PER_MINUTE", 180);
+  if(serverRate.size>=5000){for(const [key,value] of serverRate)if(now-value.startedAt>=60000)serverRate.delete(key);if(serverRate.size>=5000&&!serverRate.has(serverKey))return false;}
+  const max=serverKey==="__global__"?numberEnv("ROBLOX_BRIDGE_GLOBAL_EVENTS_PER_MINUTE",1800):numberEnv("ROBLOX_BRIDGE_MAX_EVENTS_PER_MINUTE",180);
   const current = serverRate.get(serverKey);
   if (!current || now - current.startedAt >= 60_000) {
     serverRate.set(serverKey, { startedAt: now, count: 1 });
@@ -277,7 +279,7 @@ function buildEventEmbed(event: RobloxBridgeEvent): EmbedBuilder {
 async function resolveTextChannel(client: Client, guild: Guild, id: string | undefined): Promise<TextChannel | null> {
   if (!id) return null;
   const channel = await guild.channels.fetch(id).catch(() => null);
-  if (channel?.type !== ChannelType.GuildText) return null;
+  if(channel?.type!==ChannelType.GuildText||channel.permissionsFor(guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel)!==false)return null;
   const me = guild.members.me;
   const permissions = me ? channel.permissionsFor(me) : null;
   if (!permissions?.has(PermissionFlagsBits.ViewChannel) || !permissions.has(PermissionFlagsBits.SendMessages) || !permissions.has(PermissionFlagsBits.EmbedLinks)) return null;
@@ -379,8 +381,12 @@ export function registerRobloxBridgeRoutes(app: Express, client: Client): void {
       res.status(400).json({ ok: false, error: "invalid_event" });
       return;
     }
-    const serverKey = event.server?.jobId || "unknown";
-    if (!allowRate(serverKey)) {
+    const body=safeObject(req.body);const v2=body.protocol===2;
+    if((process.env.ROBLOX_BRIDGE_REQUIRE_V2==="true"&&!v2)||(v2&&(typeof body.sentAt!=="number"||!Number.isFinite(body.sentAt)||Math.abs(Date.now()-body.sentAt)>120000||typeof body.eventId!=="string"||! /^[a-f0-9-]{36}$/i.test(body.eventId)))){stats.rejected++;res.status(400).json({ok:false,error:"invalid_protocol_or_timestamp"});return;}
+    const places=(process.env.ROBLOX_BRIDGE_ALLOWED_PLACE_IDS??"").split(",").map(x=>x.trim()).filter(Boolean);
+    if(places.length&&!places.includes(event.server?.placeId??"")){stats.rejected++;res.status(403).json({ok:false,error:"place_not_allowed"});return;}
+    const serverKey="job:"+(event.server?.jobId||"unknown");
+    if (!allowRate("__global__")||!allowRate(serverKey)) {
       stats.rejected += 1;
       res.status(429).json({ ok: false, error: "rate_limited" });
       return;
@@ -392,6 +398,7 @@ export function registerRobloxBridgeRoutes(app: Express, client: Client): void {
         res.status(202).json({ ok: true, duplicate: true, id: event.id });
         return;
       }
+      if(dedupe.size>=20000){const cutoff=Date.now()-600000;for(const [id,at] of dedupe)if(at<cutoff)dedupe.delete(id);if(dedupe.size>=20000){stats.rejected++;res.status(429).json({ok:false,error:"dedupe_capacity"});return;}}
       dedupe.set(externalId, Date.now());
       if (dedupe.size > 1000) {
         const cutoff = Date.now() - 10 * 60_000;

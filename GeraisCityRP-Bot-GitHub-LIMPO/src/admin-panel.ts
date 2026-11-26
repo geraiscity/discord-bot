@@ -18,6 +18,7 @@ export type SecurityPanelState = {
   enabled: boolean;
   mode: "alerta" | "proteger";
   safeMode: boolean;
+  maintenanceUntil?: number;
   logChannelId: string | null;
   incidentCount: number;
   allowedBotCount: number;
@@ -121,6 +122,7 @@ export function buildAdminSecurityConfigPanel(guild: Guild, state: SecurityPanel
       new ButtonBuilder().setCustomId("admin_security:verification_disable").setLabel("Desativar verificação").setEmoji("⛔").setStyle(ButtonStyle.Danger),
     ),
     new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId("admin_security:maintenance").setLabel("Manutenção 30 min").setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("admin_security:incident_detail").setLabel("Abrir incidente").setEmoji("🧾").setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("admin_security:snapshot_restore").setLabel("Restaurar backup").setEmoji("♻️").setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId("admin_security:back").setLabel("Voltar à Segurança").setEmoji("⬅️").setStyle(ButtonStyle.Secondary),
@@ -205,7 +207,7 @@ export async function buildAdminPanel(
   }
 
   if (section === "security") {
-    const state = securityState ?? {
+    const state: SecurityPanelState = securityState ?? {
       enabled: true,
       mode: "alerta" as const,
       safeMode: false,
@@ -223,6 +225,7 @@ export async function buildAdminPanel(
         { name: "Estado", value: state.enabled ? "🟢 Ativo" : "🔴 Desativado", inline: true },
         { name: "Modo", value: state.mode === "proteger" ? "Proteção automática" : "Somente alertas", inline: true },
         { name: "Safe Mode", value: state.safeMode ? "🟡 Ativo" : "Desativado", inline: true },
+        {name:"Manutenção",value:state.maintenanceUntil ? "<t:"+Math.floor(state.maintenanceUntil/1000)+":R>" : "Inativa",inline:true},
         { name: "Incidentes", value: String(state.incidentCount), inline: true },
         { name: "Bots permitidos", value: String(state.allowedBotCount), inline: true },
         { name: "Equipe confiável", value: String(state.trustedAdminCount), inline: true },

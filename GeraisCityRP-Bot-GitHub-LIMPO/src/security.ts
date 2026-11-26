@@ -140,6 +140,7 @@ interface PersistedState {
   trustedAdminIds?: string[];
   incidents?: Incident[];
   safeMode?: boolean;
+  maintenanceUntil?: number;
 }
 
 function validSnowflake(value: string): boolean { return /^\d{15,22}$/.test(value); }
@@ -157,6 +158,7 @@ export class GeraisShield {
   mode: SecurityMode = securityEnvironment.defaultMode;
   logChannelId = securityEnvironment.defaultLogChannelId;
   safeMode = false;
+  private maintenanceUntil = 0;
   private lockdown: Lockdown | null = null;
   private readonly joins = new SlidingCounter(20_000);
   private readonly messages = new SlidingCounter(10_000);
@@ -186,7 +188,7 @@ export class GeraisShield {
   isActive(guildId: string): boolean { return Boolean(securityEnvironment.ownerId && this.enabled && this.isTargetGuild(guildId)); }
   isAllowedBot(userId: string): boolean { return userId === this.client.user?.id || this.allowedBotIds.has(userId); }
   isTrustedAdmin(userId: string): boolean { return this.isOwner(userId) || this.trustedAdminIds.has(userId); }
-  private canAutomate(): boolean { return this.mode === "proteger" && !this.safeMode; }
+  private canAutomate(): boolean { return this.mode === "proteger" && !this.safeMode && Date.now() >= this.maintenanceUntil; }
 
 
   panelState(guildId?: string) {
@@ -194,6 +196,7 @@ export class GeraisShield {
       enabled: this.enabled,
       mode: this.mode,
       safeMode: this.safeMode,
+      maintenanceUntil: this.maintenanceUntil > Date.now() ? this.maintenanceUntil : 0,
       logChannelId: cachedSecurityRoute(guildId, this.logChannelId || null),
       incidentCount: this.incidents.length,
       allowedBotCount: this.allowedBotIds.size,
@@ -212,7 +215,7 @@ export class GeraisShield {
     guild: Guild,
     userId: string,
     action: string,
-    params: { targetId?: string; channelId?: string; roleId?: string; incidentId?: string } = {},
+    params: { targetId?: string; channelId?: string; roleId?: string; incidentId?: string; restoreScope?: "all"|"roles"|"channels"; snapshotAt?:number } = {},
   ): Promise<{ content?: string; embeds?: EmbedBuilder[] }> {
     const denied = this.panelDenied(userId, guild);
     if (denied) return { content: denied };
@@ -277,6 +280,12 @@ export class GeraisShield {
       return { content: this.safeMode ? "🟡 Safe Mode ativado." : "🟢 Safe Mode desativado." };
     }
 
+    if (action === "maintenance") {
+      this.maintenanceUntil = this.maintenanceUntil > Date.now() ? 0 : Date.now() + 30 * 60000;
+      await this.flushState();
+      await this.alert(guild, "Manutenção", this.maintenanceUntil ? "Automação pausada por 30 minutos; auditoria continua." : "Manutenção encerrada.");
+      return {content: this.maintenanceUntil ? "Manutenção ativa até <t:" + Math.floor(this.maintenanceUntil / 1000) + ":F>." : "Manutenção encerrada."};
+    }
     if (action === "release") {
       const restored = await this.restoreLockdown(guild);
       return { content: restored ? "🔓 Bloqueio de raid revertido." : "Não existe bloqueio automático ativo." };
@@ -340,7 +349,8 @@ export class GeraisShield {
     if (action === "snapshot_restore") {
       const snapshot = await loadGuildSnapshot(guild.id);
       if (!snapshot) return { content: "Nenhum snapshot válido foi encontrado para este servidor." };
-      const report = await restoreGuildSnapshot(guild, snapshot);
+      if(params.snapshotAt!==undefined && params.snapshotAt!==snapshot.createdAt) return {content:"O backup mudou. Confirme novamente."};
+      const report = await restoreGuildSnapshot(guild, snapshot,params.restoreScope);
       await this.alert(guild, "Restauração de snapshot executada", `Cargos: ${report.rolesCreated} • canais: ${report.channelsCreated} • ignorados: ${report.skipped}.`, true);
       return { content: `♻️ Restauração concluída. Cargos: **${report.rolesCreated}** • canais: **${report.channelsCreated}** • ignorados: **${report.skipped}**.` };
     }
@@ -455,6 +465,7 @@ export class GeraisShield {
       if (typeof stored.enabled === "boolean") this.enabled = stored.enabled;
       if (stored.mode === "alerta" || stored.mode === "proteger") this.mode = stored.mode;
       if (typeof stored.safeMode === "boolean") this.safeMode = stored.safeMode;
+      if(typeof stored.maintenanceUntil==="number" && Number.isFinite(stored.maintenanceUntil)) this.maintenanceUntil=Math.min(stored.maintenanceUntil,Date.now()+30*60000);
       if (typeof stored.logChannelId === "string" && (!stored.logChannelId || validSnowflake(stored.logChannelId))) this.logChannelId = stored.logChannelId;
       if (stored.lockdown && typeof stored.lockdown.guildId === "string" && Number.isFinite(stored.lockdown.expiresAt)) this.lockdown = stored.lockdown;
       for (const id of stored.allowedBotIds ?? []) if (validSnowflake(id)) this.allowedBotIds.add(id);
@@ -497,7 +508,10 @@ export class GeraisShield {
     this.saveTimer.unref();
   }
 
-  private async save(): Promise<void> {
+  private saving: Promise<void> = Promise.resolve();
+  async flushState(): Promise<void> { if(this.saveTimer){clearTimeout(this.saveTimer);this.saveTimer=null;} await this.save(); }
+  private save(): Promise<void> { this.saving=this.saving.catch(()=>undefined).then(()=>this.writeState());return this.saving; }
+  private async writeState(): Promise<void> {
     try {
       await mkdir(dirname(STATE_FILE), { recursive: true });
       const tempfile = `${STATE_FILE}.${process.pid}.tmp`;
@@ -510,6 +524,7 @@ export class GeraisShield {
         trustedAdminIds: [...this.trustedAdminIds],
         incidents: this.incidents.slice(-200),
         safeMode: this.safeMode,
+        maintenanceUntil: this.maintenanceUntil,
       };
       await writeFile(tempfile, JSON.stringify(state, null, 2), { mode: 0o600 });
       await rename(tempfile, STATE_FILE);
@@ -565,7 +580,7 @@ export class GeraisShield {
     if (this.snapshotTimers.has(guild.id)) return;
     const interval = securityEnvironment.snapshotIntervalMinutes * 60_000;
     const takeSafeSnapshot = async () => {
-      if (!this.isActive(guild.id)) return;
+      if (!this.isActive(guild.id) || this.maintenanceUntil > Date.now()) return;
       if (Date.now() - this.lastUrgentAt < 10 * 60_000) return;
       const existing = await loadGuildSnapshot(guild.id);
       if (!existing || Date.now() - existing.createdAt >= interval) {

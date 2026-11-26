@@ -33,6 +33,8 @@ end
 function Bridge.Send(eventName, severity, player, data)
 	assert(typeof(eventName) == "string", "eventName precisa ser string")
 	local payload = {
+		protocol = 2,
+		sentAt = DateTime.now().UnixTimestampMillis,
 		eventId = HttpService:GenerateGUID(false),
 		event = eventName,
 		severity = severity or "info",

@@ -60,6 +60,7 @@ import { oauthVerificationConfigured, registerVerificationOAuthRoutes } from "./
 import { closePersistence, persistenceMode, recordTicketEvent, recordTicketRating } from "./persistence.js";
 import { buildAdminPanel, buildAdminSecurityConfigPanel, type AdminSection } from "./admin-panel.js";
 import { interactionMetrics } from "./diagnostics-core.js";
+import {loadGuildSnapshot} from "./security-snapshot.js";
 import { deliverDiscordAudit } from "./discord-audit.js";
 import { isLogRouteKind } from "./audit-core.js";
 import { saveLogRoute, validateLogChannel } from "./log-routing.js";
@@ -1566,31 +1567,27 @@ async function handleInteraction(interaction: Interaction) {
     }
 
     if (action === "snapshot_restore") {
-      const confirmation = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId("admin_security:restore_confirm").setLabel("Sim, restaurar").setEmoji("♻️").setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId("admin_security:restore_cancel").setLabel("Cancelar").setStyle(ButtonStyle.Secondary),
-      );
-      await interaction.reply({
-        content: "⚠️ **Confirmar restauração?** O Shield recriará cargos/canais ausentes usando o último snapshot.",
-        components: [confirmation],
-        ephemeral: true,
-      });
-      return;
+      await interaction.deferReply({ephemeral:true});
+      const snapshot=await loadGuildSnapshot(interaction.guild.id);
+      if(!snapshot){await interaction.editReply("Nenhum backup válido.");return;}
+      const row=new ActionRowBuilder<ButtonBuilder>().addComponents(
+        ...(["all","roles","channels"] as const).map(scope=>new ButtonBuilder().setCustomId("admin_security:restore_confirm:"+scope+":"+snapshot.createdAt).setLabel({all:"Tudo",roles:"Só cargos",channels:"Só canais"}[scope]).setStyle(ButtonStyle.Danger)),
+        new ButtonBuilder().setCustomId("admin_security:restore_cancel").setLabel("Cancelar").setStyle(ButtonStyle.Secondary));
+      await interaction.editReply({content:"Confirme o escopo do backup de <t:"+Math.floor(snapshot.createdAt/1000)+":F>. Apenas objetos ausentes; mensagens e membros não são restaurados.",components:[row]});return;
     }
-    if (action === "restore_cancel") {
-      await interaction.update({ content: "Restauração cancelada.", components: [] });
-      return;
-    }
-    if (action === "restore_confirm") {
-      await interaction.deferReply({ ephemeral: true });
-      const result = await shield.panelAction(interaction.guild, interaction.user.id, "snapshot_restore");
-      await interaction.editReply({ content: result.content, embeds: result.embeds });
-      return;
+    if(action==="restore_cancel"){await interaction.update({content:"Cancelado.",components:[]});return;}
+    if(action==="restore_confirm"){
+      const [,,scope,at]=interaction.customId.split(":");
+      if((scope!=="all"&&scope!=="roles"&&scope!=="channels")||!at||!Number.isSafeInteger(Number(at))){await interaction.update({content:"Confirmação inválida. Abra novamente.",components:[]});return;}
+      await interaction.deferUpdate();
+      await interaction.editReply({content:"Restaurando...",components:[]});
+      const result=await shield.panelAction(interaction.guild,interaction.user.id,"snapshot_restore",{restoreScope:scope,snapshotAt:Number(at)});
+      await interaction.editReply({content:result.content,embeds:result.embeds,components:[]});return;
     }
 
     const directActions = new Set([
       "status", "toggle", "mode", "safe", "incidents", "snapshot_create", "snapshot_preview", "release", "test",
-      "bot_list", "team_list", "verification_status", "verification_disable",
+      "bot_list", "team_list", "verification_status", "verification_disable", "maintenance",
     ]);
     if (!directActions.has(action)) {
       await interaction.reply({ content: "Ação de segurança desconhecida.", ephemeral: true });
@@ -1599,7 +1596,7 @@ async function handleInteraction(interaction: Interaction) {
 
     // Acknowledge the button before database, Discord REST or snapshot work.
     // Keep the original panel intact for read-only actions and private results.
-    const stateChanging = new Set(["toggle", "mode", "safe", "snapshot_create", "release", "test", "verification_disable"]);
+    const stateChanging = new Set(["toggle", "mode", "safe", "snapshot_create", "release", "test", "verification_disable", "maintenance"]);
     if (stateChanging.has(action)) {
       await interaction.deferUpdate();
       const result = await shield.panelAction(interaction.guild, interaction.user.id, action);
@@ -1941,8 +1938,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const updatesPanel = ((interaction.isButton() || interaction.isChannelSelectMenu()) && interaction.customId.startsWith("log_route_")) ||
         ((interaction.isUserSelectMenu() || interaction.isRoleSelectMenu() || interaction.isChannelSelectMenu()) && interaction.customId.startsWith("shield_select:")) || (interaction.isButton() && (
         interaction.customId.startsWith("admin_panel:") ||
-        ["back", "toggle", "mode", "safe", "snapshot_create", "release", "test", "verification_disable", "log_channel"]
-          .some((action) => interaction.customId === "admin_security:" + action)
+        ["back", "toggle", "mode", "safe", "snapshot_create", "release", "test", "verification_disable", "maintenance", "log_channel"]
+          .some((action) => interaction.customId === "admin_security:" + action || interaction.customId.startsWith("admin_security:restore_confirm:"))
       ));
       if (interaction.deferred && !interaction.replied && !updatesPanel) {
         await interaction.editReply({ content: message.content, allowedMentions: message.allowedMentions }).catch(() => undefined);
@@ -2049,6 +2046,7 @@ async function shutdown(signal: string): Promise<void> {
 
   client.destroy();
 
+  await shield.flushState();
   await closePersistence();
 
   process.exit(0);
@@ -2065,7 +2063,7 @@ process.once("SIGINT", () => {
 console.log("[DISCORD] Testando endpoint do Gateway...");
 
 try {
-  const response = await fetch("https://discord.com/api/v10/gateway");
+  const response = await fetch("https://discord.com/api/v10/gateway",{signal:AbortSignal.timeout(5000)});
 
   console.log(
     `[DISCORD] GET /gateway respondeu HTTP ${response.status}`

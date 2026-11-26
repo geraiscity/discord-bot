@@ -7,11 +7,24 @@ import {
 } from "discord.js";
 import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { loadLatestSnapshotFromDatabase, saveSnapshotToDatabase } from "./persistence.js";
+import { loadLatestSnapshotFromDatabase, saveSnapshotToDatabase,loadStateFromDatabase,saveStateToDatabase } from "./persistence.js";
 
 const SNAPSHOT_FILE = resolve(process.env.SECURITY_SNAPSHOT_FILE || ".data/gerais-snapshot.json");
 const HISTORY_DIR = resolve(process.env.SECURITY_SNAPSHOT_HISTORY_DIR || ".data/gerais-snapshots");
 const MAX_HISTORY = 10;
+import {mappedId,latest,type RestoreScope} from "./recovery-core.js";
+const busy=new Set<string>();
+type Ledger={roles:Record<string,string>;channels:Record<string,string>};
+function key(s:GuildSnapshot){return "restore:"+s.guildId+":"+s.createdAt;}
+function file(s:GuildSnapshot){return join(HISTORY_DIR,s.guildId,"restore-"+s.createdAt+".json");}
+async function ledgerFor(s:GuildSnapshot):Promise<Ledger>{
+ const [db,local]=await Promise.all([loadStateFromDatabase<Ledger>(key(s)),readFile(file(s),"utf8").then(x=>JSON.parse(x) as Ledger).catch(()=>null)]);
+ return {roles:{...db?.roles,...local?.roles},channels:{...db?.channels,...local?.channels}};
+}
+async function saveLedger(s:GuildSnapshot,l:Ledger){
+ const p=file(s);const disk=(async()=>{await mkdir(dirname(p),{recursive:true});await writeFile(p+".tmp",JSON.stringify(l),{mode:0o600});await rename(p+".tmp",p);return true;})().catch(()=>false);
+ const [a,b]=await Promise.all([disk,saveStateToDatabase(key(s),l)]);if(!a&&!b)throw Error("Falha ao salvar mapa de recuperação; operação interrompida.");
+}
 
 interface RoleSnapshot {
   id: string;
@@ -85,8 +98,8 @@ async function rotateHistory(guildId: string): Promise<void> {
 }
 
 export async function createGuildSnapshot(guild: Guild): Promise<GuildSnapshot> {
-  await guild.roles.fetch();
-  await guild.channels.fetch();
+  if(busy.has(guild.id))throw Error("Operação em andamento.");busy.add(guild.id);try{
+  await Promise.all([guild.roles.fetch(),guild.channels.fetch()]);
   const snapshot: GuildSnapshot = {
     version: 3,
     guildId: guild.id,
@@ -121,6 +134,7 @@ export async function createGuildSnapshot(guild: Guild): Promise<GuildSnapshot> 
   await rotateHistory(guild.id);
   await saveSnapshotToDatabase(guild.id, snapshot.createdAt, snapshot);
   return snapshot;
+  }finally{busy.delete(guild.id);}
 }
 
 function normalizeSnapshot(parsed: GuildSnapshot | (Omit<GuildSnapshot, "version"> & { version: 2 }), guildId: string): GuildSnapshot | null {
@@ -128,18 +142,9 @@ function normalizeSnapshot(parsed: GuildSnapshot | (Omit<GuildSnapshot, "version
   return { ...parsed, version: 3 } as GuildSnapshot;
 }
 
-export async function loadGuildSnapshot(guildId: string): Promise<GuildSnapshot | null> {
-  const fromDatabase = await loadLatestSnapshotFromDatabase<GuildSnapshot | (Omit<GuildSnapshot, "version"> & { version: 2 })>(guildId);
-  if (fromDatabase) {
-    const normalized = normalizeSnapshot(fromDatabase, guildId);
-    if (normalized) return normalized;
-  }
-  try {
-    const parsed = JSON.parse(await readFile(SNAPSHOT_FILE, "utf8")) as GuildSnapshot | (Omit<GuildSnapshot, "version"> & { version: 2 });
-    return normalizeSnapshot(parsed, guildId);
-  } catch {
-    return null;
-  }
+export async function loadGuildSnapshot(guildId:string):Promise<GuildSnapshot|null>{
+ const [db,local]=await Promise.all([loadLatestSnapshotFromDatabase<GuildSnapshot>(guildId),readFile(SNAPSHOT_FILE,"utf8").then(x=>JSON.parse(x) as GuildSnapshot).catch(()=>null)]);
+ return latest([db?normalizeSnapshot(db,guildId):null,local?normalizeSnapshot(local,guildId):null]);
 }
 
 function supportedChannelType(type: number): type is ChannelType {
@@ -160,16 +165,16 @@ export interface RestorePreview {
 }
 
 export async function previewGuildRestore(guild: Guild, snapshot: GuildSnapshot): Promise<RestorePreview> {
-  await guild.roles.fetch();
-  await guild.channels.fetch();
+  await Promise.all([guild.roles.fetch(),guild.channels.fetch()]);
+  const ledger=await ledgerFor(snapshot);
   return {
     missingRoles: snapshot.roles
-      .filter((role) => !guild.roles.cache.has(role.id))
+      .filter((role) => !mappedId(role.id,ledger.roles,id=>guild.roles.cache.has(id)))
       .map((role) => ({ id: role.id, name: role.name })),
     missingChannels: snapshot.channels
-      .filter((channel) => !guild.channels.cache.has(channel.id) && supportedChannelType(channel.type))
+      .filter((channel) => !mappedId(channel.id,ledger.channels,id=>guild.channels.cache.has(id)) && supportedChannelType(channel.type))
       .map((channel) => ({ id: channel.id, name: channel.name, type: channel.type })),
-    unsupportedChannels: snapshot.channels.filter((channel) => !guild.channels.cache.has(channel.id) && !supportedChannelType(channel.type)).length,
+    unsupportedChannels: snapshot.channels.filter((channel) => !mappedId(channel.id,ledger.channels,id=>guild.channels.cache.has(id)) && !supportedChannelType(channel.type)).length,
   };
 }
 
@@ -179,7 +184,9 @@ export interface RestoreReport {
   skipped: number;
 }
 
-export async function restoreGuildSnapshot(guild: Guild, snapshot: GuildSnapshot): Promise<RestoreReport> {
+export async function restoreGuildSnapshot(guild:Guild,snapshot:GuildSnapshot,scope:RestoreScope="all"):Promise<RestoreReport>{
+ if(snapshot.guildId!==guild.id||busy.has(guild.id))throw Error("Backup inválido ou operação em andamento.");busy.add(guild.id);try{
+ const ledger=await ledgerFor(snapshot);
   const roleMap = new Map<string, string>();
   roleMap.set(guild.id, guild.id);
   let rolesCreated = 0;
@@ -190,11 +197,12 @@ export async function restoreGuildSnapshot(guild: Guild, snapshot: GuildSnapshot
   await guild.channels.fetch();
 
   for (const saved of snapshot.roles) {
-    const existing = guild.roles.cache.get(saved.id);
+    const existingId=mappedId(saved.id,ledger.roles,id=>guild.roles.cache.has(id));const existing=existingId?guild.roles.cache.get(existingId):undefined;
     if (existing) {
       roleMap.set(saved.id, existing.id);
       continue;
     }
+    if(scope==="channels"){skipped++;continue;}
     const created = await guild.roles.create({
       name: saved.name,
       color: saved.color,
@@ -205,15 +213,17 @@ export async function restoreGuildSnapshot(guild: Guild, snapshot: GuildSnapshot
     }).catch(() => null);
     if (!created) { skipped++; continue; }
     roleMap.set(saved.id, created.id);
-    rolesCreated++;
+    rolesCreated++;ledger.roles[saved.id]=created.id;await saveLedger(snapshot,ledger);
   }
 
   const channelMap = new Map<string, string>();
-  for (const saved of snapshot.channels) if (guild.channels.cache.has(saved.id)) channelMap.set(saved.id, saved.id);
+  for(const saved of snapshot.channels){const id=mappedId(saved.id,ledger.channels,id=>guild.channels.cache.has(id));if(id)channelMap.set(saved.id,id);}
 
   const createOne = async (saved: ChannelSnapshot) => {
-    if (channelMap.has(saved.id) || !supportedChannelType(saved.type)) return;
+    if(channelMap.has(saved.id)||scope==="roles")return;if(!supportedChannelType(saved.type)){skipped++;return;}
     const parent = saved.parentId ? channelMap.get(saved.parentId) ?? guild.channels.cache.get(saved.parentId)?.id : undefined;
+    if(saved.parentId&&!parent){skipped++;return;}
+    if(saved.permissionOverwrites.some(o=>o.type===OverwriteType.Role&&!roleMap.has(o.id)&&!guild.roles.cache.has(o.id))){skipped++;return;}
     const overwrites = saved.permissionOverwrites.map((overwrite) => ({
       id: roleMap.get(overwrite.id) ?? overwrite.id,
       type: overwrite.type === OverwriteType.Member ? OverwriteType.Member : OverwriteType.Role,
@@ -235,7 +245,7 @@ export async function restoreGuildSnapshot(guild: Guild, snapshot: GuildSnapshot
     const created = await guild.channels.create(options as never).catch(() => null);
     if (!created) { skipped++; return; }
     channelMap.set(saved.id, created.id);
-    channelsCreated++;
+    channelsCreated++;ledger.channels[saved.id]=created.id;await saveLedger(snapshot,ledger);
   };
 
   for (const saved of snapshot.channels.filter((channel) => channel.type === ChannelType.GuildCategory)) await createOne(saved);
@@ -247,6 +257,7 @@ export async function restoreGuildSnapshot(guild: Guild, snapshot: GuildSnapshot
   }
 
   return { rolesCreated, channelsCreated, skipped };
+  }finally{busy.delete(guild.id);}
 }
 
 export function snapshotFilePath(): string { return SNAPSHOT_FILE; }

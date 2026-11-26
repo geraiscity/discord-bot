@@ -21,10 +21,13 @@ async function initializePool(): Promise<PgPool | null> {
     connectionString: databaseUrl(),
     max: 5,
     idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 8_000,
+    connectionTimeoutMillis: 5_000,
+    statement_timeout: 8000,
+    query_timeout:10000,
     ssl: process.env.DATABASE_SSL === "false" ? false : undefined,
   });
 
+  candidate.on("error",()=>{healthCache=null;console.warn("PostgreSQL: conexão ociosa perdida.");});
   try {
     await candidate.query("select 1");
     await candidate.query(`
