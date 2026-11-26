@@ -7,19 +7,23 @@ import {
   EmbedBuilder,
   type Guild,
 } from "discord.js";
-import { getRecentRobloxEvents, getRobloxBridgeStats, robloxBridgeConfigured } from "./roblox-bridge.js";
-import { parseTicketTopic } from "./ticket-meta.js";
+import { getRecentRobloxEvents, getRobloxBridgeStats, robloxBridgeConfigured } from "../roblox/bridge.js";
+import { parseTicketTopic } from "../tickets/ticket-meta.js";
+import { buildDiagnosticsEmbed } from "../diagnostics/diagnostics.js";
+import { resolveLogRoute } from "../audit/log-routing.js";
 
-export type AdminSection = "home" | "roblox" | "logs" | "tickets" | "security";
+export type AdminSection = "home" | "roblox" | "logs" | "tickets" | "security" | "diagnostics";
 
 export type SecurityPanelState = {
   enabled: boolean;
   mode: "alerta" | "proteger";
   safeMode: boolean;
+  maintenanceUntil?: number;
   logChannelId: string | null;
   incidentCount: number;
   allowedBotCount: number;
   trustedAdminCount: number;
+  auditStats?: {confirmed:number;unconfirmed:number;replayed:number};
 };
 
 function navigation(active: AdminSection): ActionRowBuilder<ButtonBuilder>[] {
@@ -42,6 +46,7 @@ function navigation(active: AdminSection): ActionRowBuilder<ButtonBuilder>[] {
     ),
     new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId(`admin_panel:${active}:refresh`).setLabel("Atualizar").setEmoji("🔄").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("admin_panel:diagnostics").setLabel("Diagnóstico").setEmoji("🩺").setStyle(active === "diagnostics" ? ButtonStyle.Primary : ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("admin_panel:close").setLabel("Fechar").setEmoji("✖️").setStyle(ButtonStyle.Danger),
     ),
   ];
@@ -90,7 +95,7 @@ function ticketCounts(guild: Guild): { open: number; claimed: number; purchases:
 export function buildAdminSecurityConfigPanel(guild: Guild, state: SecurityPanelState) {
   const embed = new EmbedBuilder()
     .setColor(0x2b2d31)
-    .setAuthor({ name: "GERAIS CITY • SECURITY CENTER" })
+    .setAuthor({ name: "CENTRAL DE SEGURANÇA" })
     .setTitle("⚙️ Configurações do Shield")
     .setDescription("As configurações que antes ficavam espalhadas em `/seguranca` agora ficam aqui dentro do Painel Admin.")
     .addFields(
@@ -117,6 +122,7 @@ export function buildAdminSecurityConfigPanel(guild: Guild, state: SecurityPanel
       new ButtonBuilder().setCustomId("admin_security:verification_disable").setLabel("Desativar verificação").setEmoji("⛔").setStyle(ButtonStyle.Danger),
     ),
     new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId("admin_security:maintenance").setLabel("Manutenção 30 min").setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("admin_security:incident_detail").setLabel("Abrir incidente").setEmoji("🧾").setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId("admin_security:snapshot_restore").setLabel("Restaurar backup").setEmoji("♻️").setStyle(ButtonStyle.Danger),
       new ButtonBuilder().setCustomId("admin_security:back").setLabel("Voltar à Segurança").setEmoji("⬅️").setStyle(ButtonStyle.Secondary),
@@ -134,15 +140,18 @@ export async function buildAdminPanel(
   securityState?: SecurityPanelState,
 ) {
   const bridge = getRobloxBridgeStats();
-  const tickets = ticketCounts(guild);
   const persistence = process.env.DATABASE_URL?.trim() ? "PostgreSQL configurado" : "Armazenamento local/fallback";
+
+  if (section === "diagnostics") {
+    return { embeds: [await buildDiagnosticsEmbed(client, guild, securityState)], components: navigation(section) };
+  }
 
   if (section === "roblox") {
     const embed = new EmbedBuilder()
       .setColor(0x3498db)
-      .setAuthor({ name: "GERAIS CITY • CONTROL CENTER" })
+      .setAuthor({ name: "CENTRAL ADMINISTRATIVA" })
       .setTitle("🎮 Roblox Bridge")
-      .setDescription("Visão operacional da comunicação Roblox → Gerais Bot.")
+      .setDescription("Visão operacional da comunicação Roblox → Bot Discord.")
       .addFields(
         { name: "Bridge", value: robloxBridgeConfigured() ? "🟢 Configurado" : "🔴 Sem ROBLOX_BRIDGE_SECRET", inline: true },
         { name: "Eventos recebidos", value: String(bridge.received), inline: true },
@@ -158,6 +167,7 @@ export async function buildAdminPanel(
   }
 
   if (section === "logs") {
+    const auditGeneral = await resolveLogRoute(guild.id, "general", securityState?.logChannelId ?? null);
     const recent = getRecentRobloxEvents(10);
     const lines = recent.length
       ? recent.map((event) => {
@@ -167,22 +177,23 @@ export async function buildAdminPanel(
       : "Nenhum evento Roblox recebido desde que o bot ligou.";
     const embed = new EmbedBuilder()
       .setColor(0x5865f2)
-      .setAuthor({ name: "GERAIS CITY • LOG CENTER" })
+      .setAuthor({ name: "CENTRAL DE LOGS" })
       .setTitle("📋 Eventos recentes")
       .setDescription(lines.slice(0, 3900))
       .addFields(
-        { name: "gerais-logs", value: process.env.GERAIS_LOG_CHANNEL_ID ? `<#${process.env.GERAIS_LOG_CHANNEL_ID}>` : "Não configurado", inline: true },
-        { name: "security-alerts", value: process.env.SECURITY_ALERT_CHANNEL_ID ? `<#${process.env.SECURITY_ALERT_CHANNEL_ID}>` : process.env.SECURITY_LOG_CHANNEL_ID ? `<#${process.env.SECURITY_LOG_CHANNEL_ID}>` : "Não configurado", inline: true },
+        { name: "Auditoria geral Discord", value: auditGeneral ? `<#${auditGeneral}>` : "Não configurado", inline: true },
+        { name: "security-alerts", value: securityState?.logChannelId ? `<#${securityState.logChannelId}>` : "Não configurado", inline: true },
         { name: "transcripts", value: process.env.TRANSCRIPT_CHANNEL_ID ? `<#${process.env.TRANSCRIPT_CHANNEL_ID}>` : process.env.TICKET_LOG_CHANNEL_ID ? `<#${process.env.TICKET_LOG_CHANNEL_ID}>` : "Não configurado", inline: true },
       )
       .setTimestamp();
-    return { embeds: [embed], components: navigation(section) };
+    return { embeds: [embed], components: [...navigation(section), new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId("admin_panel:log_routes").setLabel("Configurar canais de logs").setEmoji("⚙️").setStyle(ButtonStyle.Primary))] };
   }
 
   if (section === "tickets") {
+    const tickets = ticketCounts(guild);
     const embed = new EmbedBuilder()
       .setColor(0xfee75c)
-      .setAuthor({ name: "GERAIS CITY • CONTROL CENTER" })
+      .setAuthor({ name: "CENTRAL ADMINISTRATIVA" })
       .setTitle("🎫 Tickets")
       .addFields(
         { name: "Abertos", value: String(tickets.open), inline: true },
@@ -196,7 +207,7 @@ export async function buildAdminPanel(
   }
 
   if (section === "security") {
-    const state = securityState ?? {
+    const state: SecurityPanelState = securityState ?? {
       enabled: true,
       mode: "alerta" as const,
       safeMode: false,
@@ -207,13 +218,14 @@ export async function buildAdminPanel(
     };
     const embed = new EmbedBuilder()
       .setColor(state.enabled ? (state.safeMode ? 0xfee75c : 0x57f287) : 0x747f8d)
-      .setAuthor({ name: "GERAIS CITY • SECURITY CENTER" })
-      .setTitle("🛡️ Gerais Shield")
+      .setAuthor({ name: "CENTRAL DE SEGURANÇA" })
+      .setTitle("🛡️ Shield")
       .setDescription("Todos os controles principais de segurança ficam aqui. O slash command `/seguranca` foi removido para deixar a lista de comandos limpa.")
       .addFields(
         { name: "Estado", value: state.enabled ? "🟢 Ativo" : "🔴 Desativado", inline: true },
         { name: "Modo", value: state.mode === "proteger" ? "Proteção automática" : "Somente alertas", inline: true },
         { name: "Safe Mode", value: state.safeMode ? "🟡 Ativo" : "Desativado", inline: true },
+        {name:"Manutenção",value:state.maintenanceUntil ? "<t:"+Math.floor(state.maintenanceUntil/1000)+":R>" : "Inativa",inline:true},
         { name: "Incidentes", value: String(state.incidentCount), inline: true },
         { name: "Bots permitidos", value: String(state.allowedBotCount), inline: true },
         { name: "Equipe confiável", value: String(state.trustedAdminCount), inline: true },
@@ -225,20 +237,21 @@ export async function buildAdminPanel(
     return { embeds: [embed], components: [nav[0], ...securityRows(state), nav[1]] };
   }
 
+  const tickets = ticketCounts(guild);
   const embed = new EmbedBuilder()
     .setColor(0xFFD700)
-    .setAuthor({ name: "GERAIS CITY • CONTROL CENTER" })
+    .setAuthor({ name: "CENTRAL ADMINISTRATIVA" })
     .setTitle("⚙️ Painel Administrativo")
     .setDescription("Central privada do Discord + Roblox. Use os botões abaixo para navegar sem criar dezenas de comandos e canais.")
     .addFields(
-      { name: "Gerais Bot", value: client.isReady() ? `🟢 Online • ${client.ws.ping}ms` : "🔴 Desconectado", inline: true },
+      { name: "Bot Discord", value: client.isReady() ? `🟢 Online • ${client.ws.ping}ms` : "🔴 Desconectado", inline: true },
       { name: "Uptime", value: uptimeText(Math.floor(process.uptime())), inline: true },
       { name: "Persistência", value: persistence, inline: true },
       { name: "Roblox Bridge", value: robloxBridgeConfigured() ? `🟢 ${bridge.received} eventos` : "🟡 Aguardando configuração", inline: true },
       { name: "Tickets abertos", value: String(tickets.open), inline: true },
       { name: "Alertas Roblox", value: String(bridge.securityAlerts + bridge.economyAlerts), inline: true },
     )
-    .setFooter({ text: "Gerais City RP • Administração integrada" })
+    .setFooter({ text: "Administração integrada" })
     .setTimestamp();
   return { embeds: [embed], components: navigation("home") };
 }

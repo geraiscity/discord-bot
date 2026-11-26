@@ -1,0 +1,2 @@
+import test from "node:test";import assert from "node:assert/strict";import {readdirSync,readFileSync} from "node:fs";
+test("no legacy server name in runtime sources",()=>{const dir=new URL("../src/",import.meta.url);for(const name of readdirSync(dir,{recursive:true}).filter(n=>n.endsWith(".ts")))assert.doesNotMatch(readFileSync(new URL(name,dir),"utf8"),/gerais[\s_-]*city/i,name);});

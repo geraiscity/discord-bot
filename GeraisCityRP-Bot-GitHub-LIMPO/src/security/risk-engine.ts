@@ -120,3 +120,43 @@ export function scoreJoinRisk(input: JoinRiskInput): JoinRiskResult {
   }
   return { score, factors };
 }
+
+export interface AuditEvidence {
+  id: string;
+  targetId: string | null;
+  executorId: string | null;
+  createdTimestamp: number;
+  changes?: readonly {key: string; old?: unknown; new?: unknown}[] | null;
+}
+/** A unique, recent audit entry is required. Ambiguous or replayed evidence never authorizes punishment. */
+export function uniqueAuditEvidence<T extends AuditEvidence>(entries: readonly T[], targetId: string, eventAt: number, matches: (entry:T) => boolean = () => true): T | null {
+  const candidates = entries.filter((entry) => entry.targetId === targetId && Math.abs(entry.createdTimestamp - eventAt) <= 5000 && matches(entry));
+  return candidates.length === 1 && candidates[0]?.executorId ? candidates[0] : null;
+}
+export class AuditClaims {
+  private readonly used = new Map<string, number>();
+  claim(id: string, now = Date.now()): boolean {
+    for (const [key, expires] of this.used) if (expires <= now) this.used.delete(key);
+    if (this.used.has(id)) return false;
+    if (this.used.size >= 10000) return false;
+    this.used.set(id, now + 60000);
+    return true;
+  }
+}
+export function auditRoleAdditionMatches(entry: AuditEvidence, ids: readonly string[]): boolean {
+  const added = entry.changes?.find((change) => change.key === "$add")?.new;
+  if (!Array.isArray(added) || !ids.length) return false;
+  const actual = new Set(added.flatMap((role: unknown) => role && typeof role === "object" && "id" in role && typeof role.id === "string" ? [role.id] : []));
+  return ids.every((id) => actual.has(id));
+}
+export function auditValueMatches(entry: AuditEvidence, key: string, before: string, after: string): boolean {
+  return Boolean(entry.changes?.some((change) => change.key === key && String(change.old) === before && String(change.new) === after));
+}
+export function massActionDecision(count: number, threshold: number, trusted: boolean, automated: boolean) {
+  const effectiveThreshold = trusted ? threshold * 2 : threshold;
+  return {alert: count >= threshold, contain: automated && count >= effectiveThreshold, effectiveThreshold};
+}
+/** Weak profile signals only raise an alert; individual automatic quarantine requires a raid and a new account. */
+export function shouldQuarantineJoin(input: JoinRiskInput, threshold: number): boolean {
+  return !input.isBot && input.accountAgeMs < 7 * 86400000 && input.joinsInWindow >= input.raidThreshold && scoreJoinRisk(input).score >= threshold;
+}

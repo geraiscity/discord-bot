@@ -7,7 +7,7 @@ import {
   platformAndHandle,
   safeCreatorName,
   youtubeVideoId,
-} from "../src/media-promo-utils.ts";
+} from "../src/communication/media-promo-utils.ts";
 
 test("aceita somente links HTTPS públicos e rejeita entradas inválidas", () => {
   assert.equal(parseMediaLink("https://youtu.be/aqz-KE-bpKQ").hostname, "youtu.be");

@@ -1,3 +1,4 @@
+import { cachedSecurityRoute, getLogRoutes, resolveLogRoute, saveLogRoute, validateLogChannel } from "../audit/log-routing.js";
 import {
   AuditLogEvent,
   ChannelType,
@@ -23,17 +24,24 @@ import {
   scoreJoinRisk,
   shouldQuarantineRoles,
   SlidingCounter,
+  AuditClaims,
+  uniqueAuditEvidence,
+  auditRoleAdditionMatches,
+  auditValueMatches,
+  massActionDecision,
+  shouldQuarantineJoin,
+  type AuditEvidence,
   type SecurityMode,
-} from "./security-core.js";
-import { parseTicketTopic } from "./ticket-meta.js";
-import { createGuildSnapshot, loadGuildSnapshot, previewGuildRestore, restoreGuildSnapshot, snapshotFilePath } from "./security-snapshot.js";
+} from "./risk-engine.js";
+import { parseTicketTopic } from "../tickets/ticket-meta.js";
+import { createGuildSnapshot, loadGuildSnapshot, previewGuildRestore, restoreGuildSnapshot, snapshotFilePath } from "../backups/snapshot.js";
 import {
   loadRecentSecurityIncidents,
   loadStateFromDatabase,
   persistSecurityIncident,
   persistenceMode,
   saveStateToDatabase,
-} from "./persistence.js";
+} from "../database/persistence.js";
 import {
   buildVerificationPanelEmbed,
   exactEmailVerificationEnabled,
@@ -43,7 +51,7 @@ import {
   verificationButtonRow,
   verificationEnvironment,
   verificationStateFile,
-} from "./verification.js";
+} from "../verification/verification.js";
 
 const CRITICAL_PERMISSIONS =
   PermissionFlagsBits.Administrator |
@@ -132,6 +140,7 @@ interface PersistedState {
   trustedAdminIds?: string[];
   incidents?: Incident[];
   safeMode?: boolean;
+  maintenanceUntil?: number;
 }
 
 function validSnowflake(value: string): boolean { return /^\d{15,22}$/.test(value); }
@@ -149,6 +158,7 @@ export class GeraisShield {
   mode: SecurityMode = securityEnvironment.defaultMode;
   logChannelId = securityEnvironment.defaultLogChannelId;
   safeMode = false;
+  private maintenanceUntil = 0;
   private lockdown: Lockdown | null = null;
   private readonly joins = new SlidingCounter(20_000);
   private readonly messages = new SlidingCounter(10_000);
@@ -156,7 +166,10 @@ export class GeraisShield {
   private readonly destructive = new SlidingCounter(30_000);
   private readonly creations = new SlidingCounter(30_000);
   private readonly cooldown = new Map<string, number>();
-  private readonly contained = new Set<string>();
+  private readonly auditClaims = new AuditClaims();
+  private readonly auditRequests = new Map<string, Promise<AuditEvidence[]>>();
+  private readonly auditStats = {confirmed:0, unconfirmed:0, replayed:0};
+  private readonly containmentInFlight = new Set<string>();
   private pendingLockdown = false;
   private readonly observedPrivateChannels = new Set<string>();
   private readonly allowedBotIds = new Set(securityEnvironment.allowedBotIds);
@@ -175,23 +188,25 @@ export class GeraisShield {
   isActive(guildId: string): boolean { return Boolean(securityEnvironment.ownerId && this.enabled && this.isTargetGuild(guildId)); }
   isAllowedBot(userId: string): boolean { return userId === this.client.user?.id || this.allowedBotIds.has(userId); }
   isTrustedAdmin(userId: string): boolean { return this.isOwner(userId) || this.trustedAdminIds.has(userId); }
-  private canAutomate(): boolean { return this.mode === "proteger" && !this.safeMode; }
+  private canAutomate(): boolean { return this.mode === "proteger" && !this.safeMode && Date.now() >= this.maintenanceUntil; }
 
 
-  panelState() {
+  panelState(guildId?: string) {
     return {
       enabled: this.enabled,
       mode: this.mode,
       safeMode: this.safeMode,
-      logChannelId: this.logChannelId || null,
+      maintenanceUntil: this.maintenanceUntil > Date.now() ? this.maintenanceUntil : 0,
+      logChannelId: cachedSecurityRoute(guildId, this.logChannelId || null),
       incidentCount: this.incidents.length,
       allowedBotCount: this.allowedBotIds.size,
       trustedAdminCount: this.trustedAdminIds.size,
+      auditStats: {...this.auditStats},
     };
   }
 
   private panelDenied(userId: string, guild: Guild): string | null {
-    if (!this.isOwner(userId)) return "⛔ Apenas o proprietário configurado pode controlar o Gerais Shield.";
+    if (!this.isOwner(userId)) return "⛔ Apenas o proprietário configurado pode controlar o Shield.";
     if (!this.isTargetGuild(guild.id)) return "O Shield só pode ser administrado no servidor configurado.";
     return null;
   }
@@ -200,7 +215,7 @@ export class GeraisShield {
     guild: Guild,
     userId: string,
     action: string,
-    params: { targetId?: string; channelId?: string; roleId?: string; incidentId?: string } = {},
+    params: { targetId?: string; channelId?: string; roleId?: string; incidentId?: string; restoreScope?: "all"|"roles"|"channels"; snapshotAt?:number } = {},
   ): Promise<{ content?: string; embeds?: EmbedBuilder[] }> {
     const denied = this.panelDenied(userId, guild);
     if (denied) return { content: denied };
@@ -219,13 +234,15 @@ export class GeraisShield {
         ["Gerenciar Webhooks", PermissionFlagsBits.ManageWebhooks],
       ] as const;
       const missing = needed.filter(([, bit]) => !perms?.has(bit)).map(([name]) => name);
-      const snapshot = await loadGuildSnapshot(guild.id);
-      const verification = await loadVerificationConfig();
-      const storage = await persistenceMode();
+      const [snapshot, verification, storage] = await Promise.all([
+        loadGuildSnapshot(guild.id),
+        loadVerificationConfig(),
+        persistenceMode(),
+      ]);
       return {
         embeds: [new EmbedBuilder()
           .setColor(this.enabled ? (this.safeMode ? 0xfee75c : 0x57f287) : 0x747f8d)
-          .setTitle("🛡️ Gerais Shield • Status")
+          .setTitle("🛡️ Shield • Status")
           .addFields(
             { name: "Estado", value: this.enabled ? "🟢 Ligado" : "🔴 Desligado", inline: true },
             { name: "Modo", value: this.mode === "proteger" ? "Proteção automática" : "Somente alertas", inline: true },
@@ -233,7 +250,7 @@ export class GeraisShield {
             { name: "Anti-cópia", value: securityEnvironment.antiCopy ? "Ativo" : "Desativado", inline: true },
             { name: "Risk Score", value: `Limite: **${securityEnvironment.riskThreshold}**`, inline: true },
             { name: "Anti-nuke", value: `${securityEnvironment.destructiveThreshold} ações / 30s`, inline: true },
-            { name: "Logs", value: this.logChannelId ? `<#${this.logChannelId}>` : "DM do proprietário", inline: false },
+            { name: "Logs", value: cachedSecurityRoute(guild.id, this.logChannelId || null) ? `<#${cachedSecurityRoute(guild.id, this.logChannelId || null)}>` : "Não configurado (sem mensagens privadas)", inline: false },
             { name: "Snapshot", value: snapshot ? `Salvo <t:${Math.floor(snapshot.createdAt / 1000)}:R> • ${snapshot.roles.length} cargos • ${snapshot.channels.length} canais` : "Nenhum snapshot salvo", inline: false },
             { name: "Verificação", value: verification?.enabled ? `Ativa em <#${verification.channelId}> → <@&${verification.roleId}>` : "Não configurada/desativada", inline: false },
             { name: "Persistência", value: storage === "postgresql" ? "PostgreSQL + fallback local" : "Arquivo local", inline: true },
@@ -246,7 +263,7 @@ export class GeraisShield {
     if (action === "toggle") {
       this.enabled = !this.enabled;
       this.queueSave();
-      await this.alert(guild, "Proteção alterada", `O proprietário ${this.enabled ? "ativou" : "desativou"} o Gerais Shield.`);
+      await this.alert(guild, "Proteção alterada", `O proprietário ${this.enabled ? "ativou" : "desativou"} o Shield.`);
       return { content: `Shield ${this.enabled ? "🟢 ativado" : "🔴 desativado"}.` };
     }
 
@@ -263,14 +280,20 @@ export class GeraisShield {
       return { content: this.safeMode ? "🟡 Safe Mode ativado." : "🟢 Safe Mode desativado." };
     }
 
+    if (action === "maintenance") {
+      this.maintenanceUntil = this.maintenanceUntil > Date.now() ? 0 : Date.now() + 30 * 60000;
+      await this.flushState();
+      await this.alert(guild, "Manutenção", this.maintenanceUntil ? "Automação pausada por 30 minutos; auditoria continua." : "Manutenção encerrada.");
+      return {content: this.maintenanceUntil ? "Manutenção ativa até <t:" + Math.floor(this.maintenanceUntil / 1000) + ":F>." : "Manutenção encerrada."};
+    }
     if (action === "release") {
       const restored = await this.restoreLockdown(guild);
       return { content: restored ? "🔓 Bloqueio de raid revertido." : "Não existe bloqueio automático ativo." };
     }
 
     if (action === "test") {
-      await this.alert(guild, "Alerta de teste", "✅ O canal privado de segurança está recebendo alertas.");
-      return { content: "📣 Alerta de teste enviado." };
+      const delivered = await this.alert(guild, "Alerta de teste", "✅ Teste de entrega do canal privado de segurança.");
+      return { content: delivered ? "📣 Alerta entregue no canal de segurança." : "⚠️ Não consegui entregar o teste. Configure um canal de texto privado e permita Ver Canal, Enviar Mensagens e Incorporar Links ao bot. O incidente foi registrado; nenhuma DM foi enviada." };
     }
 
     if (action === "incidents") {
@@ -326,7 +349,8 @@ export class GeraisShield {
     if (action === "snapshot_restore") {
       const snapshot = await loadGuildSnapshot(guild.id);
       if (!snapshot) return { content: "Nenhum snapshot válido foi encontrado para este servidor." };
-      const report = await restoreGuildSnapshot(guild, snapshot);
+      if(params.snapshotAt!==undefined && params.snapshotAt!==snapshot.createdAt) return {content:"O backup mudou. Confirme novamente."};
+      const report = await restoreGuildSnapshot(guild, snapshot,params.restoreScope);
       await this.alert(guild, "Restauração de snapshot executada", `Cargos: ${report.rolesCreated} • canais: ${report.channelsCreated} • ignorados: ${report.skipped}.`, true);
       return { content: `♻️ Restauração concluída. Cargos: **${report.rolesCreated}** • canais: **${report.channelsCreated}** • ignorados: **${report.skipped}**.` };
     }
@@ -362,14 +386,11 @@ export class GeraisShield {
     if (action === "log_channel") {
       const channelId = params.channelId?.trim() ?? "";
       if (!validSnowflake(channelId)) return { content: "Informe um ID de canal válido." };
-      const channel = await guild.channels.fetch(channelId).catch(() => null);
-      if (!channel || channel.type !== ChannelType.GuildText || channel.permissionsFor(guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel)) {
-        return { content: "Escolha um canal de texto privado, invisível para @everyone." };
-      }
-      this.logChannelId = channel.id;
-      this.queueSave();
+      const invalid = await validateLogChannel(guild, channelId);
+      if (invalid) return {content: invalid};
+      const stored = await saveLogRoute(guild.id, "security", channelId);
       await this.alert(guild, "Canal de segurança configurado", "Este canal receberá os incidentes privados do Shield.");
-      return { content: `✅ Canal de segurança configurado: <#${channel.id}>.` };
+      return { content: "✅ Canal de segurança configurado: <#" + channelId + ">." + (stored === "local" && process.env.DATABASE_URL ? " Salvo localmente; banco indisponível." : "") };
     }
 
     if (action === "verification_status") {
@@ -399,8 +420,10 @@ export class GeraisShield {
       const channelId = params.channelId?.trim() ?? "";
       const roleId = params.roleId?.trim() ?? "";
       if (!validSnowflake(channelId) || !validSnowflake(roleId)) return { content: "Informe IDs válidos de canal e cargo." };
-      const channel = await guild.channels.fetch(channelId).catch(() => null);
-      const role = await guild.roles.fetch(roleId).catch(() => null);
+      const [channel, role] = await Promise.all([
+        guild.channels.fetch(channelId).catch(() => null),
+        guild.roles.fetch(roleId).catch(() => null),
+      ]);
       if (!channel || channel.type !== ChannelType.GuildText) return { content: "Escolha um canal de texto válido." };
       if (!role) return { content: "Não foi possível consultar o cargo." };
       if (isDangerousSelfRole(role)) return { content: "Por segurança, o cargo de verificação não pode possuir permissões administrativas/moderação." };
@@ -435,13 +458,14 @@ export class GeraisShield {
       try {
         stored = JSON.parse(await readFile(STATE_FILE, "utf8")) as PersistedState;
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.error("Gerais Shield Final: estado anterior inválido ou inacessível:", error);
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.error("Shield: estado anterior inválido ou inacessível:", error);
       }
     }
     if (stored) {
       if (typeof stored.enabled === "boolean") this.enabled = stored.enabled;
       if (stored.mode === "alerta" || stored.mode === "proteger") this.mode = stored.mode;
       if (typeof stored.safeMode === "boolean") this.safeMode = stored.safeMode;
+      if(typeof stored.maintenanceUntil==="number" && Number.isFinite(stored.maintenanceUntil)) this.maintenanceUntil=Math.min(stored.maintenanceUntil,Date.now()+30*60000);
       if (typeof stored.logChannelId === "string" && (!stored.logChannelId || validSnowflake(stored.logChannelId))) this.logChannelId = stored.logChannelId;
       if (stored.lockdown && typeof stored.lockdown.guildId === "string" && Number.isFinite(stored.lockdown.expiresAt)) this.lockdown = stored.lockdown;
       for (const id of stored.allowedBotIds ?? []) if (validSnowflake(id)) this.allowedBotIds.add(id);
@@ -457,12 +481,13 @@ export class GeraisShield {
     }
     if (!securityEnvironment.ownerId || !validSnowflake(securityEnvironment.ownerId)) {
       this.enabled = false;
-      console.error("GERAIS SHIELD FINAL DESATIVADO: configure SECURITY_OWNER_ID.");
+      console.error("SHIELD DESATIVADO: configure SECURITY_OWNER_ID.");
     }
-    if (!this.logChannelId) console.warn("Gerais Shield Final: sem canal de logs; tentarei DM ao proprietário.");
+    if (!this.logChannelId) console.warn("Shield: sem canal de logs; incidentes ficam no histórico, sem mensagens privadas.");
 
     for (const guild of this.client.guilds.cache.values()) {
       if (!this.isTargetGuild(guild.id)) continue;
+      await getLogRoutes(guild.id);
       for (const channel of guild.channels.cache.values()) {
         if ("topic" in channel && typeof channel.topic === "string" && channel.topic.startsWith("ticket:")) this.observedPrivateChannels.add(channel.id);
       }
@@ -483,7 +508,10 @@ export class GeraisShield {
     this.saveTimer.unref();
   }
 
-  private async save(): Promise<void> {
+  private saving: Promise<void> = Promise.resolve();
+  async flushState(): Promise<void> { if(this.saveTimer){clearTimeout(this.saveTimer);this.saveTimer=null;} await this.save(); }
+  private save(): Promise<void> { this.saving=this.saving.catch(()=>undefined).then(()=>this.writeState());return this.saving; }
+  private async writeState(): Promise<void> {
     try {
       await mkdir(dirname(STATE_FILE), { recursive: true });
       const tempfile = `${STATE_FILE}.${process.pid}.tmp`;
@@ -496,12 +524,13 @@ export class GeraisShield {
         trustedAdminIds: [...this.trustedAdminIds],
         incidents: this.incidents.slice(-200),
         safeMode: this.safeMode,
+        maintenanceUntil: this.maintenanceUntil,
       };
       await writeFile(tempfile, JSON.stringify(state, null, 2), { mode: 0o600 });
       await rename(tempfile, STATE_FILE);
       await saveStateToDatabase(databaseStateKey(), state);
     } catch (error) {
-      console.error("Gerais Shield Final: não foi possível persistir o estado.", error);
+      console.error("Shield: não foi possível persistir o estado.", error);
     }
   }
 
@@ -522,42 +551,40 @@ export class GeraisShield {
     return incident;
   }
 
-  private async alert(guild: Guild, title: string, details: string, urgent = false): Promise<void> {
+  private async alert(guild: Guild, title: string, details: string, urgent = false): Promise<boolean> {
     const incident = this.recordIncident(guild.id, title, details, urgent);
     const embed = new EmbedBuilder()
       .setColor(urgent ? 0xed4245 : 0xfaa61a)
       .setTitle(`${urgent ? "🚨" : "🛡️"} ${title}`)
       .setDescription(details.slice(0, 3800))
       .addFields({ name: "Incidente", value: `\`${incident.id}\``, inline: true })
-      .setFooter({ text: "Gerais Shield Final • logs privados • conteúdo sensível não é reproduzido" })
+      .setFooter({ text: "Shield • logs privados • conteúdo sensível não é reproduzido" })
       .setTimestamp();
-    if (this.logChannelId) {
-      const channel = await guild.channels.fetch(this.logChannelId).catch(() => null);
+    const destination = await resolveLogRoute(guild.id, "security", this.logChannelId || null);
+    if (destination) {
+      const channel = await guild.channels.fetch(destination).catch(() => null);
       if (channel?.type === ChannelType.GuildText) {
-        if (!channel.permissionsFor(guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel)) {
+        if (channel.permissionsFor(guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel) === false) {
           const ok = await channel.send({ embeds: [embed], allowedMentions: { parse: [] } }).then(() => true).catch(() => false);
-          if (ok) return;
+          if (ok) return true;
         } else if (!this.isCooling(`public_logs:${guild.id}`, 3600_000)) {
-          console.error("Gerais Shield Final: canal de logs está público. Recusando publicar nele.");
+          console.error("Shield: canal de logs está público. Recusando publicar nele.");
         }
       }
     }
-    if (securityEnvironment.ownerId) {
-      const owner = await this.client.users.fetch(securityEnvironment.ownerId).catch(() => null);
-      if (owner && await owner.send({ embeds: [embed], allowedMentions: { parse: [] } }).then(() => true).catch(() => false)) return;
-    }
-    console.warn(`[Gerais Shield Final] ${guild.id} ${title}: alerta privado não entregue.`);
+    console.warn(`[Shield] ${guild.id} ${title}: alerta privado não entregue.`);
+    return false;
   }
 
   private startSnapshotLoop(guild: Guild): void {
     if (this.snapshotTimers.has(guild.id)) return;
     const interval = securityEnvironment.snapshotIntervalMinutes * 60_000;
     const takeSafeSnapshot = async () => {
-      if (!this.isActive(guild.id)) return;
+      if (!this.isActive(guild.id) || this.maintenanceUntil > Date.now()) return;
       if (Date.now() - this.lastUrgentAt < 10 * 60_000) return;
       const existing = await loadGuildSnapshot(guild.id);
       if (!existing || Date.now() - existing.createdAt >= interval) {
-        await createGuildSnapshot(guild).catch((error) => console.error("Gerais Shield Final/snapshot automático:", error));
+        await createGuildSnapshot(guild).catch((error) => console.error("Shield/snapshot automático:", error));
       }
     };
     setTimeout(() => { void takeSafeSnapshot(); }, 15_000).unref();
@@ -568,7 +595,7 @@ export class GeraisShield {
 
   async handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {
     if (!this.isOwner(interaction.user.id)) {
-      await interaction.reply({ content: "⛔ Apenas o proprietário configurado pode controlar o Gerais Shield.", ephemeral: true });
+      await interaction.reply({ content: "⛔ Apenas o proprietário configurado pode controlar o Shield.", ephemeral: true });
       return;
     }
     if (!interaction.guild || !this.isTargetGuild(interaction.guild.id)) {
@@ -651,7 +678,7 @@ export class GeraisShield {
           ephemeral: true,
           embeds: [new EmbedBuilder()
             .setColor(this.enabled ? (this.safeMode ? 0xfee75c : 0x57f287) : 0x747f8d)
-            .setTitle("🛡️ Gerais Shield • Central Final de Defesa")
+            .setTitle("🛡️ Shield • Central Final de Defesa")
             .addFields(
               { name: "Estado", value: this.enabled ? "🟢 Ligado" : "🔴 Desligado", inline: true },
               { name: "Modo", value: this.mode === "proteger" ? "Proteção automática" : "Somente alertas", inline: true },
@@ -661,7 +688,7 @@ export class GeraisShield {
               { name: "Anti-nuke", value: `${securityEnvironment.destructiveThreshold} ações / 30s`, inline: true },
               { name: "Anti-clone", value: `${securityEnvironment.creationThreshold} criações / 30s`, inline: true },
               { name: "2FA da moderação", value: Number(interaction.guild.mfaLevel) >= 1 ? "Exigido pelo servidor" : "Não exigido — recomendado ativar no Discord", inline: false },
-              { name: "Logs", value: this.logChannelId ? `<#${this.logChannelId}>` : "DM do proprietário", inline: false },
+              { name: "Logs", value: cachedSecurityRoute(interaction.guild.id, this.logChannelId || null) ? `<#${cachedSecurityRoute(interaction.guild.id, this.logChannelId || null)}>` : "Não configurado (sem mensagens privadas)", inline: false },
               { name: "Snapshot", value: snapshot ? `Salvo <t:${Math.floor(snapshot.createdAt / 1000)}:R> • ${snapshot.roles.length} cargos • ${snapshot.channels.length} canais` : "Nenhum snapshot salvo", inline: false },
               { name: "Verificação", value: verification?.enabled ? `Ativa em <#${verification.channelId}> → <@&${verification.roleId}>` : "Não configurada/desativada", inline: false },
               { name: "Bots permitidos", value: `${this.allowedBotIds.size}`, inline: true },
@@ -677,7 +704,7 @@ export class GeraisShield {
         this.enabled = subcommand === "ativar";
         this.queueSave();
         await interaction.reply({ content: `Shield ${this.enabled ? "ativado" : "desativado"}.`, ephemeral: true });
-        await this.alert(interaction.guild, "Proteção alterada", `O proprietário ${this.enabled ? "ativou" : "desativou"} o Gerais Shield.`);
+        await this.alert(interaction.guild, "Proteção alterada", `O proprietário ${this.enabled ? "ativou" : "desativou"} o Shield.`);
         return;
       }
 
@@ -709,8 +736,8 @@ export class GeraisShield {
 
       if (subcommand === "teste") {
         await interaction.deferReply({ ephemeral: true });
-        await this.alert(interaction.guild, "Alerta de teste", "✅ O canal privado de segurança está recebendo alertas.");
-        await interaction.editReply("Alerta enviado. Confira o canal de segurança ou sua DM.");
+        const delivered = await this.alert(interaction.guild, "Alerta de teste", "✅ Teste de entrega do canal privado de segurança.");
+        await interaction.editReply(delivered ? "Alerta entregue no canal de segurança." : "Não consegui entregar o teste. Confira o canal privado e as permissões do bot. Nenhuma DM foi enviada.");
         return;
       }
     }
@@ -718,14 +745,14 @@ export class GeraisShield {
     if (group === "logs") {
       if (subcommand === "canal") {
         const channel = interaction.options.getChannel("canal", true);
-        const resolved = await interaction.guild.channels.fetch(channel.id).catch(() => null);
-        if (!resolved || resolved.type !== ChannelType.GuildText || resolved.permissionsFor(interaction.guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel)) {
-          await interaction.reply({ content: "Escolha um canal de texto privado, invisível para @everyone.", ephemeral: true });
+        await interaction.deferReply({ephemeral:true});
+        const invalid = await validateLogChannel(interaction.guild, channel.id);
+        if (invalid) {
+          await interaction.editReply(invalid);
           return;
         }
-        this.logChannelId = resolved.id;
-        this.queueSave();
-        await interaction.reply({ content: `Canal de segurança configurado: <#${resolved.id}>.`, ephemeral: true });
+        await saveLogRoute(interaction.guild.id, "security", channel.id);
+        await interaction.editReply("Canal de segurança configurado: <#" + channel.id + ">.");
         await this.alert(interaction.guild, "Canal de segurança configurado", "Este canal receberá os incidentes privados do Shield.");
         return;
       }
@@ -903,7 +930,7 @@ export class GeraisShield {
       return;
     }
 
-    const risk = scoreJoinRisk({
+    const riskInput = {
       accountAgeMs: Math.max(0, Date.now() - member.user.createdTimestamp),
       defaultAvatar: member.user.avatar === null,
       username: member.user.username,
@@ -911,11 +938,12 @@ export class GeraisShield {
       raidThreshold: securityEnvironment.joinThreshold,
       isBot: false,
       botAllowed: true,
-    });
+    };
+    const risk = scoreJoinRisk(riskInput);
     if (risk.score >= securityEnvironment.riskThreshold && !this.isCooling(`risk:${member.guild.id}:${member.id}`, 5 * 60_000)) {
       await this.alert(member.guild, "Entrada com Risk Score elevado", `Membro: <@${member.id}> • Score: **${risk.score}**/${securityEnvironment.riskThreshold}. Sinais: ${risk.factors.join(", ") || "nenhum"}.`, count >= securityEnvironment.joinThreshold);
-      if (this.canAutomate() && member.moderatable) {
-        await member.timeout(securityEnvironment.quarantineMinutes * 60_000, `Gerais Shield Final: Risk Score ${risk.score}`).catch(() => undefined);
+      if (this.canAutomate() && member.moderatable && shouldQuarantineJoin(riskInput, securityEnvironment.riskThreshold)) {
+        await member.timeout(securityEnvironment.quarantineMinutes * 60_000, `Shield: Risk Score ${risk.score}`).catch(() => undefined);
       }
     }
 
@@ -926,13 +954,13 @@ export class GeraisShield {
     try {
       const prior = member.guild.verificationLevel;
       if (prior < 4) {
-        await member.guild.setVerificationLevel(4 as Guild["verificationLevel"], "Gerais Shield Final: possível raid");
+        await member.guild.setVerificationLevel(4 as Guild["verificationLevel"], "Shield: possível raid");
         this.lockdown = { guildId: member.guild.id, previousLevel: prior, expiresAt: Date.now() + LOCKDOWN_MILLISECONDS };
         this.queueSave();
         this.scheduleRecovery(member.guild);
       }
     } catch (error) {
-      console.error("Gerais Shield Final: falha ao elevar verificação", error);
+      console.error("Shield: falha ao elevar verificação", error);
       await this.alert(member.guild, "Falha ao aplicar proteção contra raid", "Verifique a permissão Gerenciar Servidor.", true);
     } finally { this.pendingLockdown = false; }
   }
@@ -942,15 +970,16 @@ export class GeraisShield {
     const actorId = await this.executorFromAudit(member.guild, AuditLogEvent.BotAdd, member.id);
     await this.alert(member.guild, "Bot não autorizado detectado", `Bot: <@${member.id}> • adicionado por: ${actorId ? `<@${actorId}>` : "não identificado"}. O bot não está na allowlist anti-cópia.`, true);
     if (!this.canAutomate()) return;
-    if (member.kickable) await member.kick("Gerais Shield Final: bot não autorizado / proteção anti-cópia").catch(() => undefined);
-    if (actorId && !this.isOwner(actorId) && actorId !== this.client.user?.id) await this.contain(member.guild, actorId, "adição de bot não autorizado");
+    if (member.kickable) await member.kick("Shield: bot não autorizado / proteção anti-cópia").catch(() => undefined);
+    // A single bot addition may be a configuration mistake; remove the unapproved bot, not the human administrator.
+    // Repeated destructive activity is handled by the mass-action policy.
   }
 
   private scheduleRecovery(guild: Guild): void {
     const current = this.lockdown;
     if (!current || current.guildId !== guild.id) return;
     const remaining = Math.max(0, current.expiresAt - Date.now());
-    setTimeout(() => { void this.restoreLockdown(guild).catch((error) => console.error("Gerais Shield Final/recuperação:", error)); }, remaining).unref();
+    setTimeout(() => { void this.restoreLockdown(guild).catch((error) => console.error("Shield/recuperação:", error)); }, remaining).unref();
   }
 
   private async restoreLockdown(guild: Guild): Promise<boolean> {
@@ -958,13 +987,13 @@ export class GeraisShield {
     if (!current || current.guildId !== guild.id) return false;
     try {
       const latest = await guild.fetch();
-      if (latest.verificationLevel === 4) await latest.setVerificationLevel(current.previousLevel as Guild["verificationLevel"], "Gerais Shield Final: fim do bloqueio emergencial");
+      if (latest.verificationLevel === 4) await latest.setVerificationLevel(current.previousLevel as Guild["verificationLevel"], "Shield: fim do bloqueio emergencial");
       this.lockdown = null;
       this.queueSave();
       await this.alert(guild, "Fim do bloqueio emergencial", "Nível de verificação anterior restaurado.");
       return true;
     } catch (error) {
-      console.error("Gerais Shield Final: falha ao restaurar verificação", error);
+      console.error("Shield: falha ao restaurar verificação", error);
       return false;
     }
   }
@@ -987,7 +1016,7 @@ export class GeraisShield {
     }
     if (this.canAutomate() && violationCount === 3) {
       const member = await message.guild.members.fetch(message.author.id).catch(() => null);
-      if (member?.moderatable) await member.timeout(10 * 60_000, "Gerais Shield Final: 3 infrações em 60 segundos").catch(() => undefined);
+      if (member?.moderatable) await member.timeout(10 * 60_000, "Shield: 3 infrações em 60 segundos").catch(() => undefined);
     }
   }
 
@@ -1002,7 +1031,7 @@ export class GeraisShield {
     const everyoneVisible = newChannel.permissionsFor(newChannel.guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel);
     if (everyoneVisible) {
       if (this.canAutomate()) {
-        await newChannel.permissionOverwrites.edit(newChannel.guild.roles.everyone, { ViewChannel: false }, { reason: "Gerais Shield Final: canal privado não pode ficar público" })
+        await newChannel.permissionOverwrites.edit(newChannel.guild.roles.everyone, { ViewChannel: false }, { reason: "Shield: canal privado não pode ficar público" })
           .then(() => this.alert(newChannel.guild, "Exposição pública revertida", `O canal <#${newChannel.id}> foi novamente ocultado de @everyone.`, true))
           .catch(() => this.alert(newChannel.guild, "RISCO: canal privado exposto", `Não consegui reocultar <#${newChannel.id}>.`, true));
       } else if (!this.isCooling(`private:${newChannel.id}`, 60_000)) {
@@ -1021,28 +1050,49 @@ export class GeraisShield {
           (process.env.TICKET_AUTO_INCLUDE_ADMIN_ROLES === "true" && (role.permissions.has(PermissionFlagsBits.Administrator) || role.permissions.has(PermissionFlagsBits.ManageChannels)))));
       if (allowed) continue;
       if (this.canAutomate() && securityEnvironment.strictTicketAcl && ticketMeta) {
-        await newChannel.permissionOverwrites.edit(current.id, { ViewChannel: false }, { reason: "Gerais Shield Final: ACL de ticket" })
+        await newChannel.permissionOverwrites.edit(current.id, { ViewChannel: false }, { reason: "Shield: ACL de ticket" })
           .then(() => this.alert(newChannel.guild, "Acesso não autorizado a ticket revertido", `O ID \`${current.id}\` perdeu a nova permissão em <#${newChannel.id}>.`, true))
           .catch(() => this.alert(newChannel.guild, "Falha ao reverter acesso de ticket", `Revise o ID \`${current.id}\` em <#${newChannel.id}>.`, true));
       }
     }
   }
 
-  private async executorFromAudit(guild: Guild, type: AuditLogEvent, targetId: string): Promise<string | null> {
+  private async executorFromAudit(guild: Guild, type: AuditLogEvent, targetId: string, matches: (entry:AuditEvidence) => boolean = () => true): Promise<string | null> {
+    const eventAt = Date.now();
+    const key = guild.id + ":" + type;
+    if (!guild.members.me?.permissions.has(PermissionFlagsBits.ViewAuditLog)) {
+      this.auditStats.unconfirmed++;
+      return null;
+    }
     try {
-      await new Promise((done) => setTimeout(done, 900));
-      const entries = await guild.fetchAuditLogs({ type, limit: 10 });
-      const entry = entries.entries.find((item) => item.targetId === targetId && Date.now() - item.createdTimestamp <= 20_000);
-      return entry?.executorId ?? null;
-    } catch { return null; }
+      // Batch simultaneous events of the same type into one REST request.
+      let request = this.auditRequests.get(key);
+      if (!request) {
+        request = (async () => {
+          await new Promise((done) => setTimeout(done, 1000));
+          const logs = await guild.fetchAuditLogs({type,limit:50});
+          return [...logs.entries.values()];
+        })().finally(() => { this.auditRequests.delete(key); });
+        this.auditRequests.set(key, request);
+      }
+      const evidence = uniqueAuditEvidence(await request, targetId, eventAt, matches);
+      if (!evidence) { this.auditStats.unconfirmed++; return null; }
+      if (!this.auditClaims.claim(guild.id + ":" + evidence.id)) { this.auditStats.replayed++; return null; }
+      this.auditStats.confirmed++;
+      return evidence.executorId;
+    } catch { this.auditStats.unconfirmed++; return null; }
+  }
+
+  private exemptActor(guild: Guild, id: string): boolean {
+    return this.isOwner(id) || id === guild.ownerId || id === this.client.user?.id;
   }
 
   private async maybeAutoRestore(guild: Guild): Promise<void> {
     if (!securityEnvironment.autoRestore || this.autoRestoreRunning) return;
-    const snapshot = await loadGuildSnapshot(guild.id);
-    if (!snapshot) return;
     this.autoRestoreRunning = true;
     try {
+      const snapshot = await loadGuildSnapshot(guild.id);
+      if (!snapshot) return;
       const report = await restoreGuildSnapshot(guild, snapshot);
       await this.alert(guild, "Auto-restauração anti-nuke", `Snapshot aplicado. Cargos: ${report.rolesCreated} • canais: ${report.channelsCreated} • ignorados: ${report.skipped}.`, true);
     } finally { this.autoRestoreRunning = false; }
@@ -1051,55 +1101,72 @@ export class GeraisShield {
   async destructiveAction(guild: Guild, type: AuditLogEvent, targetId: string, label: string): Promise<void> {
     if (!this.isActive(guild.id)) return;
     const actorId = await this.executorFromAudit(guild, type, targetId);
-    if (actorId && (this.isOwner(actorId) || actorId === this.client.user?.id)) return;
-    const count = actorId ? this.destructive.record(`${guild.id}:${actorId}`) : 0;
-    if (!actorId || count === 1 || count === securityEnvironment.destructiveThreshold || count % 5 === 0) {
-      await this.alert(guild, `Ação administrativa: ${label}`, `Alvo: \`${targetId}\` • responsável: ${actorId ? `<@${actorId}>` : "não identificado"}.${actorId ? ` ${count} ação(ões) destrutiva(s) em 30 segundos.` : " Confira o Audit Log."}`, count >= securityEnvironment.destructiveThreshold);
+    if (actorId && this.exemptActor(guild, actorId)) return;
+    if (!actorId) {
+      if (!this.isCooling("unknown:" + guild.id + ":" + type, 30000)) await this.alert(guild, "Ação sem autoria confirmada", label + " • alvo " + targetId + " • nenhuma punição automática.");
+      return;
     }
-    if (actorId && count >= securityEnvironment.destructiveThreshold && this.canAutomate() && !this.contained.has(`${guild.id}:${actorId}`)) {
-      this.contained.add(`${guild.id}:${actorId}`);
-      await this.contain(guild, actorId, `${count} ações destrutivas em 30s`);
-      await this.maybeAutoRestore(guild);
+    const count = this.destructive.record(guild.id + ":" + actorId);
+    const trusted = this.isTrustedAdmin(actorId);
+    const policy = massActionDecision(count, securityEnvironment.destructiveThreshold, trusted, this.canAutomate());
+    if (policy.alert && (count === securityEnvironment.destructiveThreshold || count === policy.effectiveThreshold || count % 5 === 0)) {
+      await this.alert(guild, "Ações destrutivas em sequência", "Responsável: <@" + actorId + "> • " + count + " ações em 30s • limite de contenção: " + policy.effectiveThreshold + (trusted ? " (equipe confiável)" : "") + ".", true);
     }
+    if (policy.contain && await this.contain(guild, actorId, count + " ações destrutivas em 30s")) await this.maybeAutoRestore(guild);
   }
 
   async creationAction(guild: Guild, type: AuditLogEvent, targetId: string, label: string, remove?: () => Promise<unknown>): Promise<void> {
     if (!this.isActive(guild.id) || !securityEnvironment.antiCopy) return;
     const actorId = await this.executorFromAudit(guild, type, targetId);
-    if (actorId && (this.isOwner(actorId) || actorId === this.client.user?.id)) return;
-    const count = actorId ? this.creations.record(`${guild.id}:${actorId}`) : 0;
-    if (!actorId || count === 1 || count === securityEnvironment.creationThreshold) {
-      await this.alert(guild, `Anti-cópia: ${label}`, `Alvo: \`${targetId}\` • responsável: ${actorId ? `<@${actorId}>` : "não identificado"}.${actorId ? ` ${count} criação(ões) em 30 segundos.` : ""}`, count >= securityEnvironment.creationThreshold);
+    if (actorId && this.exemptActor(guild, actorId)) return;
+    if (!actorId) {
+      if (!this.isCooling("unknown:" + guild.id + ":" + type, 30000)) await this.alert(guild, "Criação sem autoria confirmada", label + " • alvo " + targetId + " • nenhuma punição automática.");
+      return;
     }
-    if (actorId && count >= securityEnvironment.creationThreshold && this.canAutomate()) {
-      await this.contain(guild, actorId, "criação em massa / possível clone");
-      if (securityEnvironment.blockMassCreation && remove) await remove().catch(() => undefined);
+    const count = this.creations.record(guild.id + ":" + actorId);
+    const trusted = this.isTrustedAdmin(actorId);
+    const policy = massActionDecision(count, securityEnvironment.creationThreshold, trusted, this.canAutomate());
+    if (policy.alert && (count === securityEnvironment.creationThreshold || count === policy.effectiveThreshold)) {
+      await this.alert(guild, "Criações em sequência", "Responsável: <@" + actorId + "> • " + count + " criações em 30s • limite de contenção: " + policy.effectiveThreshold + (trusted ? " (equipe confiável)" : "") + ".", true);
+    }
+    if (policy.contain && await this.contain(guild, actorId, "criação em massa / possível clone")) {
+      // Only remove the confirmed triggering creation, and never a trusted administrator's newly created object.
+      if (!trusted && securityEnvironment.blockMassCreation && remove) await remove().catch(() => undefined);
     }
   }
 
-  private async contain(guild: Guild, actorId: string, reason: string): Promise<void> {
-    const member = await guild.members.fetch(actorId).catch(() => null);
-    if (!member || member.id === guild.ownerId) {
-      await this.alert(guild, "Contenção manual necessária", `Não consigo conter <@${actorId}> automaticamente. Motivo detectado: ${reason}.`, true);
-      return;
-    }
-    const roles = member.roles.cache.filter((role) => !role.managed && role.editable && role.id !== guild.id && shouldQuarantineRoles(role.permissions.bitfield, CRITICAL_PERMISSIONS));
-    const removed: string[] = [];
-    for (const role of roles.values()) {
-      if (await member.roles.remove(role, `Gerais Shield Final: ${reason}`).then(() => true).catch(() => false)) removed.push(role.id);
-    }
-    if (member.moderatable) await member.timeout(60 * 60_000, `Gerais Shield Final: contenção (${reason})`).catch(() => undefined);
-    await this.alert(guild, "Conta administrativa contida", `Responsável: <@${actorId}> • motivo: **${reason}** • cargos perigosos removidos: ${removed.length ? removed.map((id) => `<@&${id}>`).join(", ") : "nenhum removível"}.`, true);
+  private async contain(guild: Guild, actorId: string, reason: string): Promise<boolean> {
+    if (!this.isActive(guild.id) || !this.canAutomate() || this.exemptActor(guild, actorId)) return false;
+    const key = guild.id + ":" + actorId;
+    if (this.containmentInFlight.has(key) || this.isCooling("contain:" + key, 60000)) return false;
+    this.containmentInFlight.add(key);
+    try {
+      const member = await guild.members.fetch({user:actorId,force:true}).catch(() => null);
+      if (!member || !member.manageable || this.exemptActor(guild, actorId) || !this.canAutomate() || !this.isActive(guild.id)) {
+        await this.alert(guild, "Contenção manual necessária", "Não consegui conter <@" + actorId + ">. Motivo: " + reason + ".", true);
+        return false;
+      }
+      const roles = member.roles.cache.filter((role) => !role.managed && role.editable && role.id !== guild.id && shouldQuarantineRoles(role.permissions.bitfield, CRITICAL_PERMISSIONS));
+      const removed: string[] = [];
+      for (const role of roles.values()) {
+        if (!this.canAutomate() || !this.isActive(guild.id)) break;
+        if (await member.roles.remove(role, "Shield: " + reason).then(() => true).catch(() => false)) removed.push(role.name + " (" + role.id + ")");
+      }
+      const timeoutApplied = this.canAutomate() && this.isActive(guild.id) && member.moderatable && await member.timeout(60 * 60_000, "Shield: contenção (" + reason + ")").then(() => true).catch(() => false);
+      const success = removed.length > 0 || timeoutApplied;
+      await this.alert(guild, success ? "Contenção aplicada" : "Contenção não aplicada", "Responsável: @" + member.user.username + " (" + actorId + ") • motivo: " + reason + "\nCargos removidos: " + (removed.join(", ") || "nenhum") + "\nTimeout: " + (timeoutApplied ? "aplicado" : "não aplicado") + ".", true);
+      return success;
+    } finally { this.containmentInFlight.delete(key); }
   }
 
   async memberRemove(member: GuildMember | PartialGuildMember): Promise<void> {
     if (!this.isActive(member.guild.id) || member.user?.bot) return;
     const actorId = await this.executorFromAudit(member.guild, AuditLogEvent.MemberKick, member.id);
-    if (!actorId) return; // Saída voluntária: não é incidente.
-    if (this.isOwner(actorId) || actorId === this.client.user?.id) return;
-    const count = this.destructive.record(`${member.guild.id}:${actorId}`);
-    await this.alert(member.guild, "Expulsão de membro", `Membro: <@${member.id}> • executor: <@${actorId}> • ${count} expulsão(ões)/ações destrutivas recentes.`, count >= securityEnvironment.destructiveThreshold);
-    if (count >= securityEnvironment.destructiveThreshold && this.canAutomate()) await this.contain(member.guild, actorId, "expulsões em massa");
+    if (!actorId || this.exemptActor(member.guild, actorId)) return;
+    const count = this.destructive.record(member.guild.id + ":" + actorId);
+    const policy = massActionDecision(count, securityEnvironment.destructiveThreshold, this.isTrustedAdmin(actorId), this.canAutomate());
+    if (policy.alert && (count === securityEnvironment.destructiveThreshold || count === policy.effectiveThreshold)) await this.alert(member.guild, "Expulsões em sequência", "Executor: <@" + actorId + "> • " + count + " ações recentes • limite de contenção: " + policy.effectiveThreshold + ".", true);
+    if (policy.contain) await this.contain(member.guild, actorId, "expulsões em massa");
   }
 
   async memberUpdate(oldMember: GuildMember | PartialGuildMember, newMember: GuildMember): Promise<void> {
@@ -1110,21 +1177,21 @@ export class GeraisShield {
     }
     const newlyPrivileged = newMember.roles.cache.filter((role) => !oldMember.roles.cache.has(role.id) && shouldQuarantineRoles(role.permissions.bitfield, CRITICAL_PERMISSIONS));
     if (!newlyPrivileged.size) return;
-    const actorId = await this.executorFromAudit(newMember.guild, AuditLogEvent.MemberRoleUpdate, newMember.id);
-    if (actorId && this.isOwner(actorId)) return;
+    const actorId = await this.executorFromAudit(newMember.guild, AuditLogEvent.MemberRoleUpdate, newMember.id, (entry) => auditRoleAdditionMatches(entry, [...newlyPrivileged.keys()]));
+    if (actorId && this.exemptActor(newMember.guild, actorId)) return;
     await this.alert(newMember.guild, "Atribuição de cargo privilegiado", `Membro: <@${newMember.id}> • cargos: ${newlyPrivileged.map((r) => `<@&${r.id}>`).join(", ")} • executor: ${actorId ? `<@${actorId}>` : "não confirmado"}.`, true);
     if (!this.canAutomate() || !actorId || actorId === this.client.user?.id || this.isTrustedAdmin(actorId)) return;
     for (const role of newlyPrivileged.values()) {
-      if (role.editable && newMember.manageable) await newMember.roles.remove(role, "Gerais Shield Final: promoção administrativa não autorizada").catch(() => undefined);
+      if (role.editable && newMember.manageable) await newMember.roles.remove(role, "Shield: promoção administrativa não autorizada").catch(() => undefined);
     }
   }
 
   async inviteCreate(invite: Invite): Promise<void> {
     if (!invite.guild || !this.isActive(invite.guild.id)) return;
     const guild = this.client.guilds.cache.get(invite.guild.id);
-    if (!guild || !invite.inviterId || this.isOwner(invite.inviterId) || invite.inviterId === this.client.user?.id) return;
+    if (!guild || !invite.inviterId || this.exemptActor(guild, invite.inviterId)) return;
     await this.alert(guild, "Novo convite criado", `Criado por <@${invite.inviterId}> no canal ${invite.channelId ? `<#${invite.channelId}>` : "desconhecido"}.`);
-    if (securityEnvironment.blockUnauthorizedInvites && this.canAutomate() && !this.isTrustedAdmin(invite.inviterId)) await invite.delete("Gerais Shield Final: convite não autorizado").catch(() => undefined);
+    if (securityEnvironment.blockUnauthorizedInvites && this.canAutomate() && !this.isTrustedAdmin(invite.inviterId)) await invite.delete("Shield: convite não autorizado").catch(() => undefined);
   }
 
   async roleUpdate(oldRole: Role, newRole: Role): Promise<void> {
@@ -1132,11 +1199,12 @@ export class GeraisShield {
     const dangerous = isPrivilegedPermissionChange(oldRole.permissions.bitfield, newRole.permissions.bitfield, CRITICAL_PERMISSIONS);
     const everyoneChanged = newRole.id === newRole.guild.id && oldRole.permissions.bitfield !== newRole.permissions.bitfield;
     if (!dangerous && !everyoneChanged) return;
-    const actorId = await this.executorFromAudit(newRole.guild, AuditLogEvent.RoleUpdate, newRole.id);
-    if (actorId && this.isOwner(actorId)) return;
+    const actorId = await this.executorFromAudit(newRole.guild, AuditLogEvent.RoleUpdate, newRole.id, (entry) => auditValueMatches(entry, "permissions", oldRole.permissions.bitfield.toString(), newRole.permissions.bitfield.toString()));
+    if (actorId && this.exemptActor(newRole.guild, actorId)) return;
     await this.alert(newRole.guild, everyoneChanged ? "Permissões do @everyone alteradas" : "Elevação de permissões em cargo", `Cargo: <@&${newRole.id}> • responsável: ${actorId ? `<@${actorId}>` : "não confirmado"}.`, true);
     if (this.canAutomate() && actorId && actorId !== this.client.user?.id && !this.isTrustedAdmin(actorId)) {
-      await newRole.setPermissions(oldRole.permissions, "Gerais Shield Final: alteração privilegiada não autorizada").catch(() => undefined);
+      const latest = await newRole.guild.roles.fetch(newRole.id, {force:true}).catch(() => null);
+      if (latest && latest.permissions.bitfield === newRole.permissions.bitfield && this.canAutomate()) await latest.setPermissions(oldRole.permissions, "Shield: alteração privilegiada não autorizada").catch(() => undefined);
     }
   }
 
@@ -1144,54 +1212,38 @@ export class GeraisShield {
     if (!this.isActive(newGuild.id)) return;
     const changed = oldGuild.name !== newGuild.name || oldGuild.icon !== newGuild.icon || oldGuild.verificationLevel !== newGuild.verificationLevel;
     if (!changed) return;
-    const actorId = await this.executorFromAudit(newGuild, AuditLogEvent.GuildUpdate, newGuild.id);
-    if (actorId && this.isOwner(actorId)) return;
+    const actorId = await this.executorFromAudit(newGuild, AuditLogEvent.GuildUpdate, newGuild.id, (entry) =>
+      (oldGuild.name === newGuild.name || auditValueMatches(entry,"name",oldGuild.name,newGuild.name)) &&
+      (oldGuild.icon === newGuild.icon || auditValueMatches(entry,"icon_hash",String(oldGuild.icon),String(newGuild.icon))) &&
+      (oldGuild.verificationLevel === newGuild.verificationLevel || auditValueMatches(entry,"verification_level",String(oldGuild.verificationLevel),String(newGuild.verificationLevel)))
+    );
+    if (actorId && this.exemptActor(newGuild, actorId)) return;
     await this.alert(newGuild, "Configuração principal do servidor alterada", `Responsável: ${actorId ? `<@${actorId}>` : "não confirmado"}. Nome/ícone/verificação foram modificados.`, true);
     if (!this.canAutomate() || !actorId || actorId === this.client.user?.id || this.isTrustedAdmin(actorId)) return;
-    if (oldGuild.name !== newGuild.name) await newGuild.setName(oldGuild.name, "Gerais Shield Final: reversão de nome").catch(() => undefined);
-    if (oldGuild.verificationLevel !== newGuild.verificationLevel) await newGuild.setVerificationLevel(oldGuild.verificationLevel, "Gerais Shield Final: reversão de verificação").catch(() => undefined);
+    const latest = await newGuild.fetch().catch(() => null);
+    if (!latest || latest.name !== newGuild.name || latest.icon !== newGuild.icon || latest.verificationLevel !== newGuild.verificationLevel || !this.canAutomate()) return;
+    if (oldGuild.name !== newGuild.name) await newGuild.setName(oldGuild.name, "Shield: reversão de nome").catch(() => undefined);
+    if (oldGuild.verificationLevel !== newGuild.verificationLevel) await newGuild.setVerificationLevel(oldGuild.verificationLevel, "Shield: reversão de verificação").catch(() => undefined);
     if (oldGuild.icon !== newGuild.icon) {
-      if (!oldGuild.icon) await newGuild.setIcon(null, "Gerais Shield Final: reversão de ícone").catch(() => undefined);
+      if (!oldGuild.icon) await newGuild.setIcon(null, "Shield: reversão de ícone").catch(() => undefined);
       else {
         const url = oldGuild.iconURL({ extension: "png", size: 512 });
         if (url) {
           const buffer = await fetch(url, { signal: AbortSignal.timeout(8000) }).then(async (r) => r.ok ? Buffer.from(await r.arrayBuffer()) : null).catch(() => null);
-          if (buffer) await newGuild.setIcon(buffer, "Gerais Shield Final: reversão de ícone").catch(() => undefined);
+          if (buffer) await newGuild.setIcon(buffer, "Shield: reversão de ícone").catch(() => undefined);
         }
       }
     }
   }
 
-  async webhookUpdate(channel: TextChannel): Promise<void> {
-    if (!this.isActive(channel.guild.id) || this.isCooling(`webhook:${channel.id}`, 5000)) return;
-    let recent: { type: AuditLogEvent; actorId: string | null; targetId: string | null } | null = null;
-    for (const type of [AuditLogEvent.WebhookCreate, AuditLogEvent.WebhookUpdate, AuditLogEvent.WebhookDelete]) {
-      try {
-        const logs = await channel.guild.fetchAuditLogs({ type, limit: 5 });
-        const entry = logs.entries.find((item) => Date.now() - item.createdTimestamp <= 15_000);
-        if (entry) { recent = { type, actorId: entry.executorId ?? null, targetId: entry.targetId ?? null }; break; }
-      } catch { /* sem auditoria */ }
-    }
-    if (recent?.actorId && this.isOwner(recent.actorId)) return;
-    await this.alert(channel.guild, "Alteração em webhook", `Canal: <#${channel.id}> • executor: ${recent?.actorId ? `<@${recent.actorId}>` : "não identificado"} • tipo: ${recent?.type ?? "desconhecido"}.`, true);
-    if (this.canAutomate() && recent?.type === AuditLogEvent.WebhookCreate && recent.targetId && recent.actorId && !this.isTrustedAdmin(recent.actorId)) {
-      const hooks = await channel.fetchWebhooks().catch(() => null);
-      const hook = hooks?.get(recent.targetId);
-      if (hook) await hook.delete("Gerais Shield Final: webhook não autorizado").catch(() => undefined);
-    }
-  }
-
-  async integrationsUpdate(guild: Guild): Promise<void> {
-    if (!this.isActive(guild.id) || this.isCooling(`integration:${guild.id}`, 10_000)) return;
-    let actorId: string | null = null;
-    for (const type of [AuditLogEvent.IntegrationCreate, AuditLogEvent.IntegrationUpdate, AuditLogEvent.IntegrationDelete]) {
-      try {
-        const logs = await guild.fetchAuditLogs({ type, limit: 5 });
-        const entry = logs.entries.find((item) => Date.now() - item.createdTimestamp <= 15_000);
-        if (entry) { actorId = entry.executorId ?? null; break; }
-      } catch { /* ignore */ }
-    }
-    if (actorId && this.isOwner(actorId)) return;
-    await this.alert(guild, "Integração do servidor alterada", `Executor: ${actorId ? `<@${actorId}>` : "não identificado"}. Revise Apps, integrações e bots autorizados.`, true);
+  async auditWebhook(guild: Guild, entry: import("discord.js").GuildAuditLogsEntry): Promise<void> {
+    if (!this.isActive(guild.id) || entry.action !== AuditLogEvent.WebhookCreate || !entry.targetId || !entry.executorId) return;
+    if (this.exemptActor(guild, entry.executorId) || this.isTrustedAdmin(entry.executorId)) return;
+    if (Math.abs(Date.now() - entry.createdTimestamp) > 10000 || !this.auditClaims.claim(guild.id + ":" + entry.id)) return;
+    await this.alert(guild, "Webhook não autorizado criado", "Responsável: <@" + entry.executorId + "> • webhook " + entry.targetId + ".", true);
+    if (!this.canAutomate()) return;
+    const hooks = await guild.fetchWebhooks().catch(() => null);
+    const hook = hooks?.get(entry.targetId);
+    if (hook && this.canAutomate() && this.isActive(guild.id)) await hook.delete("Shield: webhook não autorizado confirmado pela auditoria").catch(() => undefined);
   }
 }

@@ -6,7 +6,7 @@ process.env.DISCORD_CLIENT_SECRET = "segredo-de-teste-com-tamanho-suficiente";
 process.env.VERIFICATION_OAUTH_REDIRECT_URI = "https://bot.example.com/auth/discord/callback";
 process.env.VERIFICATION_STATE_SECRET = "estado-super-secreto-com-mais-de-trinta-e-dois-caracteres";
 
-const { createVerificationState, verifyVerificationState, buildOauthAuthorizationUrl, oauthVerificationConfigured } = await import("../src/verification-oauth.ts");
+const { createVerificationState, verifyVerificationState, buildOauthAuthorizationUrl, oauthVerificationConfigured } = await import("../src/verification/oauth.ts");
 
 test("OAuth2 de verificação exige configuração completa", () => {
   assert.equal(oauthVerificationConfigured(), true);

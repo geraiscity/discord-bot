@@ -21,13 +21,17 @@ async function initializePool(): Promise<PgPool | null> {
     connectionString: databaseUrl(),
     max: 5,
     idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 8_000,
+    connectionTimeoutMillis: 5_000,
+    statement_timeout: 8000,
+    query_timeout:10000,
     ssl: process.env.DATABASE_SSL === "false" ? false : undefined,
   });
 
+  candidate.on("error",()=>{healthCache=null;console.warn("PostgreSQL: conexão ociosa perdida.");});
   try {
     await candidate.query("select 1");
     await candidate.query(`
+      create table if not exists discord_audit_archive (guild_id text not null,id text not null,created_at bigint not null,payload jsonb not null,primary key(guild_id,id));
       create table if not exists gerais_bot_state (
         key text primary key,
         value jsonb not null,
@@ -128,6 +132,40 @@ async function getPool(): Promise<PgPool | null> {
     });
   }
   return initPromise;
+}
+
+type DatabaseHealth = "local" | "available" | "unavailable" | "timeout";
+let healthProbe: Promise<DatabaseHealth> | null = null;
+let healthCache: { status: DatabaseHealth; at: number } | null = null;
+
+/** Read-only probe; never expose the connection string or raw errors. */
+export async function probeDatabase(): Promise<DatabaseHealth> {
+  if (!databaseUrl()) return "local";
+  if (healthCache && Date.now() - healthCache.at < 10_000) return healthCache.status;
+  if (!healthProbe) {
+    healthProbe = (async (): Promise<DatabaseHealth> => {
+      try {
+        const db = await getPool();
+        if (!db) return "unavailable";
+        await db.query("select 1");
+        return "available";
+      } catch {
+        return "unavailable";
+      }
+    })().then((status) => {
+      healthCache = { status, at: Date.now() };
+      return status;
+    }).finally(() => { healthProbe = null; });
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      healthProbe,
+      new Promise<DatabaseHealth>((resolve) => { timer = setTimeout(() => resolve("timeout"), 3000); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export async function persistenceMode(): Promise<PersistenceMode> {
@@ -353,3 +391,5 @@ export async function closePersistence(): Promise<void> {
   pool = null;
   await current.end().catch(() => undefined);
 }
+
+export async function saveAuditArchive(guildId:string,id:string,at:number,payload:unknown):Promise<boolean>{const db=await getPool();if(!db)return false;return db.query("insert into discord_audit_archive(guild_id,id,created_at,payload) values($1,$2,$3,$4::jsonb) on conflict do nothing",[guildId,id,at,JSON.stringify(payload)]).then(()=>true).catch(()=>false);}

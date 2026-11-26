@@ -8,7 +8,10 @@ import {
   type Guild,
   type TextChannel,
 } from "discord.js";
-import { recordRobloxEvent } from "./persistence.js";
+import { recordRobloxEvent } from "../database/persistence.js";
+import {bridgeQueue} from "../performance/work-queue.js";
+import {acceptsProtocol} from "./protocol.js";
+import {resolveLogRoute} from "../audit/log-routing.js";
 
 export type RobloxLogSeverity = "info" | "warning" | "suspicious" | "critical";
 export type RobloxLogCategory =
@@ -160,12 +163,14 @@ function isAuthorized(req: Request): boolean {
   const expected = process.env.ROBLOX_BRIDGE_SECRET?.trim();
   if (!expected) return false;
   const supplied = String(req.header("x-gerais-bridge-key") ?? "").trim();
-  return Boolean(supplied) && constantTimeEqual(supplied, expected);
+  const previous=process.env.ROBLOX_BRIDGE_PREVIOUS_SECRET?.trim();
+  return Boolean(supplied)&&(constantTimeEqual(supplied,expected)||Boolean(previous&&constantTimeEqual(supplied,previous)));
 }
 
 function allowRate(serverKey: string): boolean {
   const now = Date.now();
-  const max = numberEnv("ROBLOX_BRIDGE_MAX_EVENTS_PER_MINUTE", 180);
+  if(serverRate.size>=5000){for(const [key,value] of serverRate)if(now-value.startedAt>=60000)serverRate.delete(key);if(serverRate.size>=5000&&!serverRate.has(serverKey))return false;}
+  const max=serverKey==="__global__"?numberEnv("ROBLOX_BRIDGE_GLOBAL_EVENTS_PER_MINUTE",1800):numberEnv("ROBLOX_BRIDGE_MAX_EVENTS_PER_MINUTE",180);
   const current = serverRate.get(serverKey);
   if (!current || now - current.startedAt >= 60_000) {
     serverRate.set(serverKey, { startedAt: now, count: 1 });
@@ -225,7 +230,7 @@ function buildEventEmbed(event: RobloxBridgeEvent): EmbedBuilder {
   const playerName = event.player?.displayName || event.player?.username || "Não informado";
   const embed = new EmbedBuilder()
     .setColor(event.severity === "critical" ? 0xed4245 : event.severity === "suspicious" ? 0xf47b20 : CATEGORY_COLOR[event.category])
-    .setAuthor({ name: `GERAIS CITY • ${CATEGORY_LABEL[event.category]}` })
+    .setAuthor({ name: `${CATEGORY_LABEL[event.category]}` })
     .setTitle(`${event.severity === "critical" ? "🚨 " : event.severity === "suspicious" ? "⚠️ " : ""}${eventTitle(event)}`)
     .setFooter({ text: `Evento ${event.id} • ${event.severity.toUpperCase()}` })
     .setTimestamp(event.receivedAt);
@@ -277,7 +282,7 @@ function buildEventEmbed(event: RobloxBridgeEvent): EmbedBuilder {
 async function resolveTextChannel(client: Client, guild: Guild, id: string | undefined): Promise<TextChannel | null> {
   if (!id) return null;
   const channel = await guild.channels.fetch(id).catch(() => null);
-  if (channel?.type !== ChannelType.GuildText) return null;
+  if(channel?.type!==ChannelType.GuildText||channel.permissionsFor(guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel)!==false)return null;
   const me = guild.members.me;
   const permissions = me ? channel.permissionsFor(me) : null;
   if (!permissions?.has(PermissionFlagsBits.ViewChannel) || !permissions.has(PermissionFlagsBits.SendMessages) || !permissions.has(PermissionFlagsBits.EmbedLinks)) return null;
@@ -306,17 +311,17 @@ function shouldSendSecurity(event: RobloxBridgeEvent): boolean {
 async function dispatch(client: Client, event: RobloxBridgeEvent): Promise<void> {
   const guild = await targetGuild(client);
   if (!guild) return;
-  const generalId = process.env.GERAIS_LOG_CHANNEL_ID?.trim() || process.env.ROBLOX_LOG_CHANNEL_ID?.trim();
-  const securityId = process.env.SECURITY_ALERT_CHANNEL_ID?.trim() || process.env.SECURITY_LOG_CHANNEL_ID?.trim();
+  const generalId=await resolveLogRoute(guild.id,"roblox",null);
+  const securityId=await resolveLogRoute(guild.id,"roblox_security",process.env.SECURITY_ALERT_CHANNEL_ID?.trim()||process.env.SECURITY_LOG_CHANNEL_ID?.trim()||null);
   const embed = buildEventEmbed(event);
 
   if (shouldSendSecurity(event)) {
-    const channel = await resolveTextChannel(client, guild, securityId);
+    const channel = await resolveTextChannel(client, guild, securityId ?? undefined);
     if (channel) await channel.send({ embeds: [embed], allowedMentions: { parse: [] } }).catch(() => undefined);
     return;
   }
   if (shouldSendGeneral(event)) {
-    const channel = await resolveTextChannel(client, guild, generalId);
+    const channel = await resolveTextChannel(client, guild, generalId ?? undefined);
     if (channel) await channel.send({ embeds: [embed], allowedMentions: { parse: [] } }).catch(() => undefined);
   }
 }
@@ -379,8 +384,12 @@ export function registerRobloxBridgeRoutes(app: Express, client: Client): void {
       res.status(400).json({ ok: false, error: "invalid_event" });
       return;
     }
-    const serverKey = event.server?.jobId || "unknown";
-    if (!allowRate(serverKey)) {
+    const body=safeObject(req.body);
+    if(!acceptsProtocol(body,process.env.ROBLOX_BRIDGE_REQUIRE_V2==="true")){stats.rejected++;res.status(400).json({ok:false,error:"invalid_protocol_or_timestamp"});return;}
+    const places=(process.env.ROBLOX_BRIDGE_ALLOWED_PLACE_IDS??"").split(",").map(x=>x.trim()).filter(Boolean);
+    if(places.length&&!places.includes(event.server?.placeId??"")){stats.rejected++;res.status(403).json({ok:false,error:"place_not_allowed"});return;}
+    const serverKey="job:"+(event.server?.jobId||"unknown");
+    if (!allowRate("__global__")||!allowRate(serverKey)) {
       stats.rejected += 1;
       res.status(429).json({ ok: false, error: "rate_limited" });
       return;
@@ -392,6 +401,7 @@ export function registerRobloxBridgeRoutes(app: Express, client: Client): void {
         res.status(202).json({ ok: true, duplicate: true, id: event.id });
         return;
       }
+      if(dedupe.size>=20000){const cutoff=Date.now()-600000;for(const [id,at] of dedupe)if(at<cutoff)dedupe.delete(id);if(dedupe.size>=20000){stats.rejected++;res.status(429).json({ok:false,error:"dedupe_capacity"});return;}}
       dedupe.set(externalId, Date.now());
       if (dedupe.size > 1000) {
         const cutoff = Date.now() - 10 * 60_000;
@@ -399,8 +409,9 @@ export function registerRobloxBridgeRoutes(app: Express, client: Client): void {
       }
     }
 
+    if(!bridgeQueue.submit(async()=>{
     remember(event);
-    void recordRobloxEvent({
+    await recordRobloxEvent({
       id: event.id,
       guildId: process.env.ROBLOX_BRIDGE_GUILD_ID?.trim() || process.env.DISCORD_GUILD_ID?.trim() || "auto",
       eventType: event.event,
@@ -412,7 +423,8 @@ export function registerRobloxBridgeRoutes(app: Express, client: Client): void {
       payload: { player: event.player ?? null, server: event.server ?? null, data: event.data },
       createdAt: event.receivedAt,
     });
-    void dispatch(client, event);
+    await dispatch(client,event);
+    })) {if(externalId)dedupe.delete(externalId);stats.rejected++;res.status(429).json({ok:false,error:"queue_full"});return;}
     res.status(202).json({ ok: true, id: event.id, severity: event.severity });
   });
 

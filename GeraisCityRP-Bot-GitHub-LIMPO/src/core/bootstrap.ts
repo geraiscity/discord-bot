@@ -1,0 +1,1999 @@
+import {
+  ActionRowBuilder,
+  AuditLogEvent,
+  AttachmentBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ChannelType,
+  Client,
+  ContainerBuilder,
+  EmbedBuilder,
+  FileUploadBuilder,
+  LabelBuilder,
+  MediaGalleryBuilder,
+  MediaGalleryItemBuilder,
+  MessageFlags,
+  Events,
+  GatewayIntentBits,
+  GuildBasedChannel,
+  Interaction,
+  ButtonInteraction,
+  ChatInputCommandInteraction,
+  Message,
+  ModalBuilder,
+  ModalSubmitInteraction,
+  TextDisplayBuilder,
+  TextInputBuilder,
+  TextInputStyle,
+  StringSelectMenuBuilder,
+  UserSelectMenuBuilder,
+  ChannelSelectMenuBuilder,
+  RoleSelectMenuBuilder,
+  StringSelectMenuInteraction,
+  PermissionFlagsBits,
+  REST,
+  Routes,
+  TextChannel,
+  type InteractionReplyOptions,
+  type InteractionEditReplyOptions,
+  type MessageCreateOptions,
+} from "discord.js";
+import express from "express";
+import { buildMediaPromo } from "../communication/media-promo.js";
+import { GeraisShield, isDangerousSelfRole, securityEnvironment } from "../security/shield.js";
+import { getMediaPromoInfo, type MediaPromoKind } from "../communication/media-promo-utils.js";
+import { commandDefinitions } from "../commands/commands.js";
+import { syncBotCommands, type RegisteredGlobalCommand } from "../commands/command-sync.js";
+import { colorFromOption, config } from "../config/environment.js";
+import { buildTicketTopic, parseTicketTopic, type TicketMeta } from "../tickets/ticket-meta.js";
+import {
+  MAX_ANNOUNCEMENT_IMAGE_BYTES,
+  MAX_ANNOUNCEMENT_MEDIA_BYTES,
+  MAX_ANNOUNCEMENT_MEDIA_ITEMS,
+  announcementImageName,
+  announcementMediaName,
+  isAcceptedAnnouncementMedia,
+  isAcceptedImage,
+} from "../communication/announcement-utils.js";
+import { completeOAuthVerification, handleVerificationButton } from "../verification/verification.js";
+import { oauthVerificationConfigured, registerVerificationOAuthRoutes } from "../verification/oauth.js";
+import { closePersistence, persistenceMode, recordTicketEvent, recordTicketRating } from "../database/persistence.js";
+import { buildAdminPanel, buildAdminSecurityConfigPanel, type AdminSection } from "../panels/admin-panel.js";
+import { interactionMetrics } from "../diagnostics/interaction-metrics.js";
+import {loadGuildSnapshot} from "../backups/snapshot.js";
+import {buildTicketTranscript} from "../tickets/transcripts.js";
+import {registerSecurityEvents} from "../events/security-events.js";
+import {auditQueue,bridgeQueue} from "../performance/work-queue.js";
+import { isLogRouteKind } from "../audit/audit-core.js";
+import { saveLogRoute, validateLogChannel, resolveLogRoute } from "../audit/log-routing.js";
+import { buildLogRoutingPanel, buildLogRoutePicker, buildLogRouteCheck } from "../panels/log-panel.js";
+import { getRobloxBridgeStats, registerRobloxBridgeRoutes, robloxBridgeConfigured } from "../roblox/bridge.js";
+import {
+  buildRulesEmbed,
+  buildTicketPanelEmbed,
+} from "../panels/embeds.js";
+
+type TicketType = "bugs" | "suporte" | "denuncias" | "compras" | "parcerias";
+
+function isTicketType(value: string): value is TicketType {
+  return value === "bugs" || value === "suporte" || value === "denuncias" || value === "compras" || value === "parcerias";
+}
+
+// Canal exclusivo para auditoria dos tickets da categoria Parcerias.
+const PARTNERSHIP_LOG_CHANNEL_ID = "1568070781391470734";
+
+const ticketTypes: Array<{
+  id: TicketType;
+  label: string;
+  emoji: string;
+  description: string;
+}> = [
+  {
+    id: "bugs",
+    label: "Bugs",
+    emoji: "🛠️",
+    description: "Relate um problema técnico.",
+  },
+  {
+    id: "suporte",
+    label: "Suporte Geral",
+    emoji: "💬",
+    description: "Tire dúvidas e peça ajuda.",
+  },
+  {
+    id: "denuncias",
+    label: "Denúncias",
+    emoji: "🚨",
+    description: "Envie uma denúncia com provas.",
+  },
+  {
+    id: "compras",
+    label: "Compras",
+    emoji: "🛒",
+    description: "Atendimento para produtos e compras do servidor.",
+  },
+  {
+    id: "parcerias",
+    label: "Parcerias",
+    emoji: "🤝",
+    description: "Fale sobre oportunidades de parceria.",
+  },
+];
+
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildExpressions,
+    GatewayIntentBits.GuildIntegrations,
+    ...(securityEnvironment.ownerId ? [
+      GatewayIntentBits.GuildMembers,       // Privilegiada: habilitar no Developer Portal
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent,     // Privilegiada: habilitar no Developer Portal
+      GatewayIntentBits.GuildModeration,
+      GatewayIntentBits.GuildWebhooks,
+      GatewayIntentBits.GuildInvites,
+    ] : []),
+  ],
+});
+const shield = new GeraisShield(client);
+
+// Evita criar dois canais quando a mesma pessoa aperta o botão várias vezes.
+const openingTickets = new Set<string>();
+const closingTickets = new Set<string>();
+
+
+type PendingAnnouncement = {
+  guildId: string;
+  channelId: string;
+  title: string;
+  message: string;
+  color: number;
+  roleId: string | null;
+  createdAt: number;
+};
+
+const pendingAnnouncements = new Map<string, PendingAnnouncement>();
+
+function announcementKey(guildId: string, userId: string): string {
+  return `${guildId}:${userId}`;
+}
+
+function announcementMediaModal(): ModalBuilder {
+  const upload = new FileUploadBuilder()
+    .setCustomId("anuncio_midias")
+    .setMinValues(0)
+    .setMaxValues(MAX_ANNOUNCEMENT_MEDIA_ITEMS)
+    .setRequired(false);
+
+  const label = new LabelBuilder()
+    .setLabel("Fotos / vídeo (opcional)")
+    .setDescription("Selecione até 10 imagens, GIFs ou vídeos de uma vez.")
+    .setFileUploadComponent(upload);
+
+  return new ModalBuilder()
+    .setCustomId("announcement_media_modal")
+    .setTitle("Mídia do anúncio")
+    .addTextDisplayComponents(
+      new TextDisplayBuilder().setContent("Escolha as mídias abaixo. Você pode selecionar vários arquivos da galeria no mesmo campo."),
+    )
+    .addLabelComponents(label);
+}
+
+function securitySingleIdModal(customId: string, title: string, label: string, placeholder: string): ModalBuilder {
+  const input = new TextInputBuilder()
+    .setCustomId("valor")
+    .setLabel(label)
+    .setPlaceholder(placeholder)
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setMaxLength(30);
+  return new ModalBuilder()
+    .setCustomId(customId)
+    .setTitle(title)
+    .addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
+}
+
+type RepliableInteraction = ChatInputCommandInteraction | ButtonInteraction | StringSelectMenuInteraction | ModalSubmitInteraction;
+type ReplyOptions = InteractionReplyOptions;
+
+async function respond(
+  interaction: RepliableInteraction,
+  options: ReplyOptions,
+) {
+  if (interaction.deferred) {
+    // Reply visibility is fixed on the initial response; editReply must not
+    // receive flags such as Ephemeral.
+    const { flags: _flags, ephemeral: _ephemeral, ...editOptions } = options;
+    return interaction.editReply(editOptions as InteractionEditReplyOptions);
+  }
+
+  if (interaction.replied) {
+    return interaction.followUp(options);
+  }
+
+  return interaction.reply(options);
+}
+
+async function fetchInteractionTextChannel(interaction: RepliableInteraction): Promise<TextChannel | null> {
+  const guild = interaction.guild;
+  const channelId = interaction.channelId;
+  if (!guild || !channelId) return null;
+  const channel = await guild.channels.fetch(channelId).catch(() => null);
+  return channel?.type === ChannelType.GuildText ? channel : null;
+}
+
+function ticketPanelButtons(): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId("ticket_start")
+      .setLabel("ABRIR TICKET")
+      .setEmoji("🎫")
+      .setStyle(ButtonStyle.Primary),
+  );
+}
+
+function ticketCategorySelect(): ActionRowBuilder<StringSelectMenuBuilder> {
+  const select = new StringSelectMenuBuilder()
+    .setCustomId("ticket_category_select")
+    .setPlaceholder("Selecione o tipo de atendimento")
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions(ticketTypes.map((ticket) => ({
+      label: ticket.label,
+      value: ticket.id,
+      description: ticket.description,
+      emoji: ticket.emoji,
+    })));
+  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
+}
+
+function evidenceButtons(disabled = false): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId("denuncia_provas:sim")
+      .setLabel("Sim, tenho provas")
+      .setStyle(ButtonStyle.Success)
+      .setDisabled(disabled),
+    new ButtonBuilder()
+      .setCustomId("denuncia_provas:nao")
+      .setLabel("Não tenho provas")
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(disabled),
+  );
+}
+
+function ticketActionButtons(disabled = false): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId("ticket_claim").setLabel("Assumir").setEmoji("👮").setStyle(ButtonStyle.Primary).setDisabled(disabled),
+    new ButtonBuilder().setCustomId("ticket_add").setLabel("Adicionar pessoa").setEmoji("➕").setStyle(ButtonStyle.Secondary).setDisabled(disabled),
+    new ButtonBuilder().setCustomId("ticket_remove").setLabel("Remover pessoa").setEmoji("➖").setStyle(ButtonStyle.Secondary).setDisabled(disabled),
+    new ButtonBuilder().setCustomId("ticket_close").setLabel("Fechar").setEmoji("🔒").setStyle(ButtonStyle.Danger).setDisabled(disabled),
+  );
+}
+
+function ticketCloseConfirmButtons(): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setCustomId("ticket_close_confirm").setLabel("Confirmar fechamento").setStyle(ButtonStyle.Danger),
+    new ButtonBuilder().setCustomId("ticket_close_cancel").setLabel("Cancelar").setStyle(ButtonStyle.Secondary),
+  );
+}
+
+function ticketRatingButtons(guildId: string, ticketId: string): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+    ...[1, 2, 3, 4, 5].map((rating) =>
+      new ButtonBuilder().setCustomId(`ticket_rate:${guildId}:${ticketId}:${rating}`).setLabel(`${rating} ⭐`).setStyle(ButtonStyle.Secondary),
+    ),
+  );
+}
+
+function rolePanelButtons(
+  roles: Array<{ id: string; label: string }>,
+): ActionRowBuilder<ButtonBuilder>[] {
+  const buttons = roles.map(({ id, label }, index) =>
+    new ButtonBuilder()
+      .setCustomId(`role_toggle:${id}`)
+      .setLabel(label.slice(0, 80))
+      .setEmoji("✨")
+      .setStyle(ButtonStyle.Secondary),
+  );
+
+  const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+  for (let index = 0; index < buttons.length; index += 3) {
+    rows.push(
+      new ActionRowBuilder<ButtonBuilder>().addComponents(
+        buttons.slice(index, index + 3),
+      ),
+    );
+  }
+  return rows;
+}
+
+const sendPermissionRequirements = [
+  {
+    flag: PermissionFlagsBits.ViewChannel,
+    label: "Ver Canal",
+  },
+  {
+    flag: PermissionFlagsBits.SendMessages,
+    label: "Enviar Mensagens",
+  },
+  {
+    flag: PermissionFlagsBits.EmbedLinks,
+    label: "Incorporar Links",
+  },
+];
+
+async function ensureChannelAccess(
+  interaction: ChatInputCommandInteraction,
+  channel: GuildBasedChannel,
+  requiresAttachment = false,
+): Promise<boolean> {
+  const botMember = interaction.guild?.members.me;
+  const permissions = botMember ? channel.permissionsFor(botMember) : null;
+  const requirements = requiresAttachment
+    ? [...sendPermissionRequirements, { flag: PermissionFlagsBits.AttachFiles, label: "Anexar Arquivos" }]
+    : sendPermissionRequirements;
+  const missing = requirements
+    .filter((requirement) => !permissions?.has(requirement.flag))
+    .map((requirement) => requirement.label);
+
+  if (missing.length === 0) {
+    return true;
+  }
+
+  await respond(interaction, {
+    content:
+      `O Discord está bloqueando o acesso do bot em <#${channel.id}>. ` +
+      `Permissões efetivas faltando: ${missing.join(", ")}. ` +
+      "Confira as permissões específicas do canal e da categoria.",
+    ephemeral: true,
+  });
+  return false;
+}
+
+function channelNameFor(type: TicketType, username: string): string {
+  const safeUsername = username
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 24);
+  return `ticket-${type}-${safeUsername}`;
+}
+
+function existingTicket(guildId: string, userId: string, type: TicketType) {
+  const guild = client.guilds.cache.get(guildId);
+  return guild?.channels.cache.find((channel) => {
+    if (channel.type !== ChannelType.GuildText) return false;
+    const meta = parseTicketTopic(channel.topic);
+    return meta?.ownerId === userId && meta.type === type;
+  });
+}
+
+function moderationRoleIds(guild: NonNullable<Interaction["guild"]>): string[] {
+  const configuredIds = new Set(config.moderationRoleIds);
+  const configuredNames = new Set(
+    config.moderationRoleNames.map((name) => name.toLowerCase()),
+  );
+
+  return guild.roles.cache
+    .filter(
+      (role) =>
+        role.id !== guild.id &&
+        (configuredIds.has(role.id) ||
+          configuredNames.has(role.name.toLowerCase()) ||
+          (process.env.TICKET_AUTO_INCLUDE_ADMIN_ROLES === "true" &&
+            (role.permissions.has(PermissionFlagsBits.ManageChannels) ||
+             role.permissions.has(PermissionFlagsBits.Administrator)))),
+    )
+    .map((role) => role.id);
+}
+
+const ticketBotAccess = {
+  ViewChannel: true,
+  SendMessages: true,
+  ReadMessageHistory: true,
+  EmbedLinks: true,
+  ManageChannels: true,
+  AttachFiles: true,
+};
+
+const ticketMemberAccess = {
+  ViewChannel: true,
+  SendMessages: true,
+  ReadMessageHistory: true,
+  AttachFiles: true,
+};
+
+async function repairTicketPermissions(
+  channel: TextChannel,
+  guild: NonNullable<Interaction["guild"]>,
+  userId: string,
+  staffRoleIds: string[],
+) {
+  await channel.permissionOverwrites.edit(guild.roles.everyone.id, {
+    ViewChannel: false,
+  });
+  await channel.permissionOverwrites.edit(channel.client.user.id, ticketBotAccess);
+  await channel.permissionOverwrites.edit(userId, ticketMemberAccess);
+  await Promise.all(
+    staffRoleIds.map((roleId) =>
+      channel.permissionOverwrites.edit(roleId, {
+        ViewChannel: true,
+        SendMessages: true,
+        ReadMessageHistory: true,
+        EmbedLinks: true,
+        ManageChannels: true,
+      }),
+    ),
+  );
+}
+
+async function ensureTicketRules(channel: TextChannel) {
+  const messages = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+  const alreadyHasRules = messages?.some((message) =>
+    message.embeds.some((embed) => embed.title === "Regras do atendimento"),
+  );
+
+  if (!alreadyHasRules) {
+    await channel.send({ embeds: [buildRulesEmbed()] });
+  }
+}
+
+function ticketMetaFromChannel(channel: TextChannel): TicketMeta | null {
+  return parseTicketTopic(channel.topic);
+}
+
+function isTicketStaff(guild: NonNullable<Interaction["guild"]>, userId: string): boolean {
+  if (shield.isOwner(userId) || guild.ownerId === userId) return true;
+  const member = guild.members.cache.get(userId);
+  if (!member) return false;
+  const staff = new Set(moderationRoleIds(guild));
+  return member.roles.cache.some((role) => staff.has(role.id));
+}
+
+function canManageTicketMembers(guild: NonNullable<Interaction["guild"]>, userId: string, meta: TicketMeta): boolean {
+  return isTicketStaff(guild, userId) || (process.env.TICKET_OWNER_CAN_MANAGE_MEMBERS === "true" && meta.ownerId === userId);
+}
+
+function canUseAdminPanel(interaction: ChatInputCommandInteraction | ButtonInteraction): boolean {
+  if (!interaction.guild) return false;
+  if (shield.isOwner(interaction.user.id) || interaction.guild.ownerId === interaction.user.id) return true;
+  if (interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) return true;
+  return isTicketStaff(interaction.guild, interaction.user.id);
+}
+
+function parseUserReference(value: string): string | null {
+  const normalized = value.trim().replace(/[<@!>]/g, "");
+  return /^\d{15,22}$/.test(normalized) ? normalized : null;
+}
+
+function parseSnowflakeReference(value: string): string | null {
+  const match = value.match(/\d{15,22}/);
+  return match?.[0] ?? null;
+}
+
+async function updateTicketTopic(channel: TextChannel, meta: TicketMeta): Promise<void> {
+  await channel.setTopic(buildTicketTopic(meta), "Atendimento: metadados do atendimento");
+}
+
+async function privateGeneralLogChannel(guild: NonNullable<Interaction["guild"]>): Promise<TextChannel | null> {
+  const id = await resolveLogRoute(guild.id,"general",null);
+  if (!id) return null;
+  const channel = await guild.channels.fetch(id).catch(() => null);
+  if (channel?.type !== ChannelType.GuildText || channel.permissionsFor(guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel)!==false) return null;
+  return channel;
+}
+
+async function sendTicketLog(
+  guild: NonNullable<Interaction["guild"]>,
+  type: TicketType,
+  options: MessageCreateOptions,
+): Promise<boolean> {
+  const id=await resolveLogRoute(guild.id,`ticket_${type}`,null);
+  if(!id)return false;
+  const log = await guild.channels.fetch(id).catch((error) => {
+    console.error(`[TICKETS] Não consegui acessar o canal de logs da categoria ${type} (${id}):`, error);
+    return null;
+  });
+
+  if (log?.type !== ChannelType.GuildText && log?.type !== ChannelType.GuildAnnouncement) {
+    console.error(`[TICKETS] O canal de logs da categoria ${type} não existe ou não é um canal de texto/anúncios: ${id}.`);
+    return false;
+  }
+
+  if (log.permissionsFor(guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel) !== false) {
+    console.warn("[TICKETS] Canal de transcript não é comprovadamente privado para @everyone.");
+    return false;
+  }
+
+  try {
+    await log.send(options);
+    console.log(`[TICKETS] Transcript da categoria ${type} enviado para #${log.name} (${log.id}).`);
+    return true;
+  } catch (error) {
+    console.error(`[TICKETS] Falha ao enviar o transcript da categoria ${type} para #${log.name} (${log.id}):`, error);
+    return false;
+  }
+}
+
+async function sendGeneralLog(guild: NonNullable<Interaction["guild"]>, options: MessageCreateOptions): Promise<boolean> {
+  const log = await privateGeneralLogChannel(guild);
+  return log ? log.send(options).then(() => true).catch(() => false) : false;
+}
+
+
+async function sendPartnershipLog(
+  guild: NonNullable<Interaction["guild"]>,
+  options: MessageCreateOptions,
+): Promise<boolean> {
+  const id=await resolveLogRoute(guild.id,"ticket_parcerias",null);
+  const channel=id?await guild.channels.fetch(id).catch(()=>null):null;
+  if(channel?.type!==ChannelType.GuildText || channel.permissionsFor(guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel)!==false)return false;
+  return channel.send(options).then(() => true).catch(() => false);
+}
+
+async function claimTicket(channel: TextChannel, userId: string): Promise<string> {
+  const meta = ticketMetaFromChannel(channel);
+  if (!meta) return "Este canal não é um ticket reconhecido.";
+  if (!isTicketStaff(channel.guild, userId)) return "Apenas a equipe pode assumir tickets.";
+  meta.claimedBy = userId;
+  await updateTicketTopic(channel, meta);
+  void recordTicketEvent({ guildId: channel.guild.id, channelId: channel.id, ownerId: meta.ownerId, actorId: userId, action: "claim" });
+  await channel.send({ embeds: [new EmbedBuilder().setColor(0x57f287).setTitle("👮 Atendimento assumido").setDescription(`<@${userId}> assumiu este ticket.`).setTimestamp()] });
+  void sendGeneralLog(channel.guild, { embeds: [new EmbedBuilder().setColor(0x57f287).setAuthor({ name: "CENTRAL DE ATENDIMENTO" }).setTitle("Ticket assumido").setDescription(`<#${channel.id}> foi assumido por <@${userId}>.`).setFooter({ text: `Canal ${channel.id}` }).setTimestamp()], allowedMentions: { parse: [] } });
+  return "Ticket assumido com sucesso.";
+}
+
+async function addTicketMember(channel: TextChannel, actorId: string, userId: string): Promise<string> {
+  const meta = ticketMetaFromChannel(channel);
+  if (!meta) return "Este canal não é um ticket reconhecido.";
+  if (!canManageTicketMembers(channel.guild, actorId, meta)) return "Somente a equipe autorizada pode adicionar pessoas a este ticket.";
+  if (userId === meta.ownerId || userId === client.user?.id) return "Essa pessoa já possui acesso essencial ao ticket.";
+  if (meta.addedUserIds.includes(userId)) return "Essa pessoa já foi adicionada ao ticket.";
+  const member = await channel.guild.members.fetch(userId).catch(() => null);
+  if (!member) return "Não encontrei essa pessoa no servidor.";
+  meta.addedUserIds.push(userId);
+  await channel.permissionOverwrites.edit(userId, ticketMemberAccess, { reason: `Ticket Final: membro adicionado por ${actorId}` });
+  await updateTicketTopic(channel, meta);
+  void recordTicketEvent({ guildId: channel.guild.id, channelId: channel.id, ownerId: meta.ownerId, actorId, action: "member_add", payload: { userId } });
+  await channel.send({ content: `➕ <@${userId}> foi adicionado ao atendimento por <@${actorId}>.`, allowedMentions: { users: [userId, actorId] } });
+  return `<@${userId}> foi adicionado ao ticket.`;
+}
+
+async function removeTicketMember(channel: TextChannel, actorId: string, userId: string): Promise<string> {
+  const meta = ticketMetaFromChannel(channel);
+  if (!meta) return "Este canal não é um ticket reconhecido.";
+  if (!canManageTicketMembers(channel.guild, actorId, meta)) return "Somente a equipe autorizada pode remover pessoas deste ticket.";
+  if (userId === meta.ownerId) return "O titular do ticket não pode ser removido. Feche o ticket se necessário.";
+  if (!meta.addedUserIds.includes(userId)) return "Essa pessoa não está na lista de convidados deste ticket.";
+  meta.addedUserIds = meta.addedUserIds.filter((id) => id !== userId);
+  await channel.permissionOverwrites.delete(userId, `Ticket Final: membro removido por ${actorId}`).catch(async () => {
+    await channel.permissionOverwrites.edit(userId, { ViewChannel: false }, { reason: `Ticket Final: membro removido por ${actorId}` });
+  });
+  await updateTicketTopic(channel, meta);
+  void recordTicketEvent({ guildId: channel.guild.id, channelId: channel.id, ownerId: meta.ownerId, actorId, action: "member_remove", payload: { userId } });
+  await channel.send({ content: `➖ <@${userId}> foi removido do atendimento por <@${actorId}>.`, allowedMentions: { users: [userId, actorId] } });
+  return `<@${userId}> foi removido do ticket.`;
+}
+
+async function closeTicket(channel: TextChannel, actorId: string): Promise<void> {
+  const meta = ticketMetaFromChannel(channel);
+  if (!meta) throw new Error("Este canal não é um ticket reconhecido.");
+  const ticketType = meta.type;
+  if (!isTicketType(ticketType)) throw new Error(`Categoria de ticket inválida: ${ticketType}`);
+  if (actorId !== meta.ownerId && !isTicketStaff(channel.guild, actorId)) throw new Error("Somente o titular ou a equipe pode fechar este ticket.");
+  void recordTicketEvent({ guildId: channel.guild.id, channelId: channel.id, ownerId: meta.ownerId, actorId, action: "close_requested", payload: { claimedBy: meta.claimedBy ?? null, addedUserIds: meta.addedUserIds } });
+  const transcript = await buildTicketTranscript(channel);
+  const transcriptFile = new AttachmentBuilder(transcript, { name: `transcript-${channel.id}.txt` });
+  const logged = await sendTicketLog(channel.guild, ticketType, {
+    embeds: [new EmbedBuilder()
+      .setColor(0xed4245)
+      .setTitle("🔒 Ticket encerrado")
+      .addFields(
+        { name: "Canal", value: `${channel.name} • \`${channel.id}\``, inline: false },
+        { name: "Titular", value: `<@${meta.ownerId}>`, inline: true },
+        { name: "Fechado por", value: `<@${actorId}>`, inline: true },
+        { name: "Atendente", value: meta.claimedBy ? `<@${meta.claimedBy}>` : "Não assumido", inline: true },
+      )
+      .setTimestamp()],
+    files: [transcriptFile],
+    allowedMentions: { parse: [] },
+  });
+
+  if (!logged) {
+    throw new Error("Não consegui salvar o transcript em um canal privado. Confira o canal de logs da categoria e as permissões do bot. O ticket foi preservado.");
+  }
+
+  const ticketOwner = await client.users.fetch(meta.ownerId).catch(() => null);
+  if (ticketOwner) {
+    await ticketOwner.send({
+      embeds: [new EmbedBuilder()
+        .setColor(0xed4245)
+        .setTitle("🔒 Ticket encerrado")
+        .setDescription(`Seu ticket no servidor foi encerrado por <@${actorId}>.`)
+        .setTimestamp()],
+      allowedMentions: { users: [actorId] },
+    }).catch((error) => {
+      console.error(`[TICKETS] Não consegui enviar a confirmação de fechamento por DM para ${meta.ownerId}:`, error);
+    });
+  }
+
+  await channel.send({ embeds: [new EmbedBuilder().setColor(0xed4245).setTitle("🔒 Atendimento encerrado").setDescription(`Fechado por <@${actorId}>. ${logged ? "O transcript foi salvo no canal de logs da categoria." : "Não consegui entregar o transcript ao canal de logs desta categoria; confira o ID e as permissões do canal."}\nEste canal será removido em alguns segundos.`)] }).catch(() => undefined);
+  await new Promise<void>((resolve) => setTimeout(resolve, 3000));
+  try {
+    await channel.delete(`Ticket Final encerrado por ${actorId}`);
+  } catch {
+    throw new Error("Transcript salvo, mas não consegui excluir o canal. Confira a permissão Gerenciar Canais.");
+  }
+}
+
+function memberModal(action: "add" | "remove"): ModalBuilder {
+  const modal = new ModalBuilder().setCustomId(`ticket_member_modal:${action}`).setTitle(action === "add" ? "Adicionar pessoa ao ticket" : "Remover pessoa do ticket");
+  const input = new TextInputBuilder().setCustomId("usuario").setLabel("ID ou menção do usuário").setPlaceholder("123456789012345678 ou @usuário").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(40);
+  modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(input));
+  return modal;
+}
+
+function purchaseTicketModal(): ModalBuilder {
+  const modal = new ModalBuilder().setCustomId("ticket_purchase_modal").setTitle("Atendimento de Compras");
+  const product = new TextInputBuilder().setCustomId("produto").setLabel("Produto ou serviço").setPlaceholder("Ex.: VIP, veículo, item...").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(100);
+  const robloxUser = new TextInputBuilder().setCustomId("roblox_usuario").setLabel("Seu usuário no Roblox").setPlaceholder("Nome de usuário no Roblox").setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(40);
+  const details = new TextInputBuilder().setCustomId("detalhes").setLabel("Detalhes da solicitação").setPlaceholder("Explique o que deseja comprar ou o problema com a compra.").setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(900);
+  modal.addComponents(
+    new ActionRowBuilder<TextInputBuilder>().addComponents(product),
+    new ActionRowBuilder<TextInputBuilder>().addComponents(robloxUser),
+    new ActionRowBuilder<TextInputBuilder>().addComponents(details),
+  );
+  return modal;
+}
+
+type PurchaseTicketData = { product: string; robloxUser: string; details: string };
+
+async function createTicket(
+  interaction: ButtonInteraction | StringSelectMenuInteraction | ModalSubmitInteraction,
+  type: TicketType,
+  purchaseData?: PurchaseTicketData,
+) {
+  if (!interaction.guild || !interaction.member) {
+    await respond(interaction, {
+      content: "Este botão só pode ser usado dentro de um servidor.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const staffRoleIds = moderationRoleIds(interaction.guild);
+  const existing = existingTicket(interaction.guild.id, interaction.user.id, type);
+  if (existing) {
+    await repairTicketPermissions(
+      existing as TextChannel,
+      interaction.guild,
+      interaction.user.id,
+      staffRoleIds,
+    );
+    await ensureTicketRules(existing as TextChannel);
+    const previousMeta = ticketMetaFromChannel(existing as TextChannel);
+    if (previousMeta) {
+      await Promise.all(previousMeta.addedUserIds.map((id) => (existing as TextChannel).permissionOverwrites.edit(id, ticketMemberAccess).catch(() => undefined)));
+    }
+    await respond(interaction, {
+      content: `Você já possui um ticket aberto: <#${existing.id}>.`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const categoryById = config.ticketCategoryId
+    ? await interaction.guild.channels.fetch(config.ticketCategoryId).catch(() => null)
+    : null;
+  const categoryByName = !config.ticketCategoryId && config.ticketCategoryName
+    ? interaction.guild.channels.cache.find(
+        (channel) =>
+          channel.type === ChannelType.GuildCategory &&
+          channel.name.toLowerCase() === config.ticketCategoryName!.toLowerCase(),
+      )
+    : null;
+  const category = categoryById ?? categoryByName;
+
+  if (!category || category.type !== ChannelType.GuildCategory) {
+    console.error(
+      `[TICKETS] Categoria inválida/ausente. TICKET_CATEGORY_ID=${config.ticketCategoryId ?? "(vazio)"}; TICKET_CATEGORY_NAME=${config.ticketCategoryName ?? "(vazio)"}; servidor=${interaction.guild.id}`,
+    );
+    await respond(interaction, {
+      content:
+        "Não consegui localizar a categoria de tickets configurada. Confira TICKET_CATEGORY_ID (ID de uma categoria, não de um canal) ou TICKET_CATEGORY_NAME. O ticket não foi criado para evitar ficar no lugar errado.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const permissionOverwrites = [
+    {
+      id: interaction.guild.roles.everyone.id,
+      deny: [PermissionFlagsBits.ViewChannel],
+    },
+    {
+      id: interaction.user.id,
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory,
+        PermissionFlagsBits.AttachFiles,
+      ],
+    },
+    {
+      id: interaction.client.user.id,
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory,
+        PermissionFlagsBits.EmbedLinks,
+        PermissionFlagsBits.ManageChannels,
+        PermissionFlagsBits.AttachFiles,
+      ],
+    },
+  ];
+
+  for (const staffRoleId of staffRoleIds) {
+    permissionOverwrites.push({
+      id: staffRoleId,
+      allow: [
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory,
+        PermissionFlagsBits.EmbedLinks,
+        PermissionFlagsBits.ManageChannels,
+      ],
+    });
+  }
+
+  const channel = await interaction.guild.channels.create({
+    name: channelNameFor(type, interaction.user.username),
+    type: ChannelType.GuildText,
+    parent: category?.id,
+    topic: buildTicketTopic({ ownerId: interaction.user.id, type, addedUserIds: [] }),
+    permissionOverwrites,
+  });
+
+  void recordTicketEvent({ guildId: interaction.guild.id, channelId: channel.id, ownerId: interaction.user.id, actorId: interaction.user.id, action: "opened", payload: { type } });
+  void sendGeneralLog(interaction.guild, {
+    embeds: [new EmbedBuilder()
+      .setColor(type === "compras" ? 0x57f287 : 0x5865f2)
+      .setAuthor({ name: "CENTRAL DE ATENDIMENTO" })
+      .setTitle("Ticket aberto")
+      .addFields(
+        { name: "Usuário", value: `<@${interaction.user.id}>`, inline: true },
+        { name: "Categoria", value: type, inline: true },
+        { name: "Canal", value: `<#${channel.id}>`, inline: true },
+      )
+      .setTimestamp()],
+    allowedMentions: { parse: [] },
+  });
+
+  if (type === "parcerias") {
+    void sendPartnershipLog(interaction.guild, {
+      embeds: [new EmbedBuilder()
+        .setColor(0x5865f2)
+        .setAuthor({ name: "PARCERIAS" })
+        .setTitle("🤝 Nova solicitação de parceria")
+        .addFields(
+          { name: "Solicitante", value: "<@" + interaction.user.id + ">", inline: true },
+          { name: "Atendimento", value: "<#" + channel.id + ">", inline: true },
+        )
+        .setTimestamp()],
+      allowedMentions: { parse: [] },
+    });
+  }
+
+
+  const ticket = ticketTypes.find((item) => item.id === type)!;
+  const welcomeEmbed = new EmbedBuilder()
+    .setTitle(`${ticket.emoji} ${ticket.label}`)
+    .setDescription(
+      `Olá, <@${interaction.user.id}>. A equipe responderá assim que possível.\n\n` +
+        "Descreva seu caso e envie as informações necessárias.",
+    )
+    .setColor(type === "denuncias" ? 0xed4245 : type === "compras" ? 0x57f287 : 0xFFD700); // Cor amarela #FFD700
+
+  if (type === "compras" && purchaseData) {
+    welcomeEmbed.addFields(
+      { name: "Produto/serviço", value: purchaseData.product.slice(0, 1000), inline: false },
+      { name: "Usuário Roblox", value: `\`${purchaseData.robloxUser.slice(0, 80)}\``, inline: true },
+      { name: "Solicitação", value: purchaseData.details.slice(0, 1000), inline: false },
+    );
+  }
+
+  await channel.send({
+    content: [
+      `<@${interaction.user.id}>`,
+      ...staffRoleIds.map((roleId) => `<@&${roleId}>`),
+    ].join(" "),
+    embeds: [welcomeEmbed, buildRulesEmbed()],
+    components: [ticketActionButtons()],
+  });
+
+  if (type === "denuncias") {
+    await channel.send({
+      embeds: [
+        new EmbedBuilder()
+          .setTitle("Verificação de provas")
+          .setDescription(
+            "Você possui provas concretas (prints, vídeos) suficientes para prosseguir com a denúncia?",
+          )
+          .setColor(0xfaa61a),
+      ],
+      components: [evidenceButtons()],
+    });
+  }
+
+  await respond(interaction, {
+    content: `Seu ticket foi criado: <#${channel.id}>.`,
+    ephemeral: true,
+  });
+}
+
+async function toggleRole(
+  interaction: ButtonInteraction,
+  roleId: string,
+) {
+  if (!interaction.guild || !interaction.member) {
+    await respond(interaction, {
+      content: "Este botão só pode ser usado dentro de um servidor.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const member = await interaction.guild.members.fetch(interaction.user.id);
+  const role = await interaction.guild.roles.fetch(roleId);
+
+  if (!role) {
+    await respond(interaction, {
+      content: "Este cargo não foi encontrado ou foi removido.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (!role.editable) {
+    await respond(interaction, {
+      content:
+        `Não consigo gerenciar o cargo **${role.name}**. ` +
+        "Coloque o cargo do bot acima dele na hierarquia do servidor.",
+      ephemeral: true,
+    });
+    return;
+  }
+  // Painéis antigos e novos jamais podem entregar cargos de administração.
+  if (isDangerousSelfRole(role)) {
+    await respond(interaction, {
+      content: "Este cargo possui permissões administrativas e não pode ser gerenciado por painel público.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (member.roles.cache.has(role.id)) {
+    await member.roles.remove(role);
+    await respond(interaction, {
+      ephemeral: true,
+      embeds: [new EmbedBuilder()
+        .setColor(0xfee75c)
+        .setTitle("✨ Cargo atualizado")
+        .setDescription(`O cargo ${role} foi **removido** do seu perfil com sucesso.`)
+        .setFooter({ text: "Cargos automáticos" })],
+    });
+  } else {
+    await member.roles.add(role);
+    await respond(interaction, {
+      ephemeral: true,
+      embeds: [new EmbedBuilder()
+        .setColor(0x57f287)
+        .setTitle("✅ Cargo adicionado!")
+        .setDescription(`O cargo ${role} foi adicionado ao seu perfil com sucesso.`)
+        .setFooter({ text: "Cargos automáticos" })],
+    });
+  }
+}
+
+function roleIdsFromPanelMessage(message: Message): string[] {
+  const rows = message.components as unknown as Array<{
+    components?: Array<{ customId?: string }>;
+  }>;
+
+  return rows
+    .flatMap((row) => row.components ?? [])
+    .map((component) => component.customId)
+    .filter((customId): customId is string =>
+      Boolean(customId?.startsWith("role_toggle:")),
+    )
+    .map((customId) => {
+      const parts = customId.split(":");
+      return parts.length === 2 ? parts[1] : parts[2];
+    })
+    .filter((roleId): roleId is string => Boolean(roleId))
+    .slice(0, 6);
+}
+
+async function handleInteraction(interaction: Interaction) {
+  if (interaction.isChatInputCommand()) {
+    // Nunca usar permissões do Discord como substituto para a conferência do ID.
+    if (!interaction.guild || !shield.isTargetGuild(interaction.guild.id) || (config.guildId && interaction.guild.id !== config.guildId)) {
+      await interaction.reply({content:"Comandos disponíveis apenas no servidor autorizado.",ephemeral:true});return;
+    }
+    if (shield.shouldRestrictCommand(interaction.commandName) && !shield.isOwner(interaction.user.id)) {
+      await interaction.reply({
+        content: securityEnvironment.ownerId
+          ? "⛔ Este comando é exclusivo do proprietário do servidor."
+          : "Comandos administrativos bloqueados: configure SECURITY_OWNER_ID nos Secrets do Replit.",
+        ephemeral: true,
+      });
+      return;
+    }
+    const commandPermission: Record<string,bigint> = {painel:PermissionFlagsBits.ManageChannels,"reaction-role":PermissionFlagsBits.ManageRoles,anunciar:PermissionFlagsBits.ManageMessages,divulgar:PermissionFlagsBits.ManageMessages};
+    const required = commandPermission[interaction.commandName];
+    const authorized = shield.isOwner(interaction.user.id) || interaction.guild.ownerId === interaction.user.id ||
+      (interaction.commandName === "painel-admin" ? canUseAdminPanel(interaction) : Boolean(required && interaction.memberPermissions?.has(required)));
+    if(!authorized){await interaction.reply({content:"⛔ Você não tem autorização para este comando.",ephemeral:true});return;}
+    if (interaction.commandName === "anunciar") {
+      if (!interaction.guild || !interaction.channelId) {
+        await interaction.reply({ content: "Use /anunciar dentro de um canal do servidor.", ephemeral: true });
+        return;
+      }
+      const targetChannel = await interaction.guild.channels.fetch(interaction.channelId).catch(() => null);
+      if (!targetChannel || (targetChannel.type !== ChannelType.GuildText && targetChannel.type !== ChannelType.GuildAnnouncement)) {
+        await interaction.reply({ content: "Use /anunciar em um canal de texto ou de anúncios.", ephemeral: true });
+        return;
+      }
+      if (!(await ensureChannelAccess(interaction, targetChannel, true))) return;
+
+      const key = announcementKey(interaction.guild.id, interaction.user.id);
+      pendingAnnouncements.set(key, {
+        guildId: interaction.guild.id,
+        channelId: targetChannel.id,
+        title: interaction.options.getString("titulo", true),
+        message: interaction.options.getString("mensagem")?.trim() ?? "",
+        color: colorFromOption(interaction.options.getString("cor")),
+        roleId: interaction.options.getRole("mencao")?.id ?? null,
+        createdAt: Date.now(),
+      });
+      setTimeout(() => {
+        const current = pendingAnnouncements.get(key);
+        if (current && Date.now() - current.createdAt >= 10 * 60_000) pendingAnnouncements.delete(key);
+      }, 10 * 60_000).unref();
+
+      await interaction.showModal(announcementMediaModal());
+      return;
+    }
+
+    console.log(`[TICKET-DEBUG] /${interaction.commandName} recebido; iniciando resposta privada.`);
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    console.log(`[TICKET-DEBUG] Resposta privada confirmada para /${interaction.commandName}.`);
+
+    if (interaction.commandName === "painel" && interaction.options.getSubcommand(true) === "ticket") {
+      console.log("[TICKET-DEBUG] Subcomando /painel ticket iniciado.");
+      const selectedChannel = interaction.options.getChannel("canal", true);
+      console.log(`[TICKET-DEBUG] Canal selecionado: ${selectedChannel.id}; buscando no servidor ${interaction.guildId ?? "sem servidor"}.`);
+      const targetChannel = await interaction.guild?.channels
+        .fetch(selectedChannel.id)
+        .catch((error) => {
+          console.error("[TICKET-DEBUG] Falha ao buscar canal:", error);
+          return null;
+        });
+      console.log(`[TICKET-DEBUG] Busca do canal concluída: ${targetChannel?.id ?? "não encontrado"}.`);
+      if (!targetChannel || !("send" in targetChannel)) {
+        await respond(interaction, {
+          content:
+            "Não consegui acessar o canal escolhido. Verifique se o bot tem Ver Canal e Enviar Mensagens nele.",
+          ephemeral: true,
+        });
+        return;
+      }
+      console.log("[TICKET-DEBUG] Verificando permissões do bot no canal.");
+      if (!(await ensureChannelAccess(interaction, targetChannel))) {
+        console.log("[TICKET-DEBUG] Verificação de permissões não autorizou a publicação.");
+        return;
+      }
+      console.log("[TICKET-DEBUG] Permissões do canal confirmadas.");
+
+      const panelImage = interaction.options.getAttachment("imagem");
+      const panelThumbnail = interaction.options.getAttachment("thumbnail");
+      const panelAttachments = [panelImage, panelThumbnail].filter((item): item is NonNullable<typeof item> => Boolean(item));
+      if (panelAttachments.some((image) => !isAcceptedImage(image.name, image.contentType) || image.size > MAX_ANNOUNCEMENT_IMAGE_BYTES)) {
+        await respond(interaction, { content: "Imagem e thumbnail precisam ser PNG/JPG/GIF/WebP e ter no máximo 8 MB cada.", ephemeral: true });
+        return;
+      }
+      const files: AttachmentBuilder[] = [];
+      let panelImageUrl: string | null = null;
+      let panelThumbnailUrl: string | null = null;
+      try {
+        for (const image of panelAttachments) {
+          console.log(`[TICKET-DEBUG] Baixando anexo ${image.name} (${image.size} bytes).`);
+          const response = await fetch(image.url, { signal: AbortSignal.timeout(12_000) });
+          if (!response.ok) throw new Error(`Não foi possível obter ${image.name}.`);
+          const bytes = Buffer.from(await response.arrayBuffer());
+          if (bytes.byteLength > MAX_ANNOUNCEMENT_IMAGE_BYTES) throw new Error(`${image.name} ultrapassou 8 MB.`);
+          const baseName = announcementImageName(image.name, false);
+          const name = image.id === panelThumbnail?.id ? `thumb_${baseName}` : `banner_${baseName}`;
+          files.push(new AttachmentBuilder(bytes, { name }));
+          if (image.id === panelThumbnail?.id) panelThumbnailUrl = `attachment://${name}`;
+          else panelImageUrl = `attachment://${name}`;
+        }
+      } catch (error) {
+        await respond(interaction, { content: error instanceof Error ? error.message : "Não consegui preparar a imagem do painel.", ephemeral: true });
+        return;
+      }
+
+      console.log(`[TICKET-DEBUG] Preparação concluída. Enviando painel para #${targetChannel.name}.`);
+      await targetChannel.send({
+        embeds: [
+          buildTicketPanelEmbed({
+            title: interaction.options.getString("titulo"),
+            description: interaction.options.getString("descricao"),
+            color: colorFromOption(interaction.options.getString("cor") ?? "FFD700"),
+            footerImage: panelImageUrl ?? interaction.options.getString("imagem_rodape"),
+            thumbnail: panelThumbnailUrl,
+          }),
+        ],
+        files,
+        components: [ticketPanelButtons()],
+      });
+      console.log("[TICKET-DEBUG] Mensagem do painel enviada com sucesso. Respondendo ao comando.");
+      await respond(interaction, {
+        content: "Painel de tickets publicado.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (interaction.commandName === "painel-admin") {
+      if (!interaction.guild || !canUseAdminPanel(interaction)) {
+        await respond(interaction, { content: "⛔ Este painel é exclusivo da administração autorizada.", ephemeral: true });
+        return;
+      }
+      await respond(interaction, { ...(await buildAdminPanel(client, interaction.guild, "home", shield.panelState(interaction.guild.id))), ephemeral: true });
+      return;
+    }
+
+    if (interaction.commandName === "reaction-role") {
+      const targetChannel = await fetchInteractionTextChannel(interaction);
+      if (!targetChannel) {
+        await respond(interaction, {
+          content: "Use /reaction-role diretamente no canal de texto onde o painel deve ficar.",
+          ephemeral: true,
+        });
+        return;
+      }
+      if (!(await ensureChannelAccess(interaction, targetChannel))) return;
+
+      const roleIds = Array.from({ length: 6 }, (_, index) =>
+        interaction.options.getRole(`cargo_${index + 1}`)?.id,
+      ).filter((roleId): roleId is string => Boolean(roleId));
+
+      const uniqueRoleIds = [...new Set(roleIds)];
+      const roles = (
+        await Promise.all(uniqueRoleIds.map((roleId) => interaction.guild!.roles.fetch(roleId)))
+      ).filter((role): role is NonNullable<typeof role> => Boolean(role));
+
+      if (roles.length !== uniqueRoleIds.length) {
+        await respond(interaction, {
+          content: "Um ou mais cargos selecionados não foram encontrados.",
+          ephemeral: true,
+        });
+        return;
+      }
+      if (roles.some(isDangerousSelfRole)) {
+        await respond(interaction, {
+          content: "Por segurança, o painel de cargos não pode oferecer permissões administrativas ou de moderação.",
+          ephemeral: true,
+        });
+        return;
+      }
+      const uneditable = roles.find((role) => !role.editable);
+      if (uneditable) {
+        await respond(interaction, {
+          content: `Não consigo entregar o cargo **${uneditable.name}**. Coloque o cargo do bot acima dele na hierarquia.`,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      const panelEmbed = new EmbedBuilder()
+        .setColor(0x5865f2)
+        .setAuthor({ name: "CARGOS AUTOMÁTICOS" })
+        .setTitle("🎭 Escolha seus cargos")
+        .setDescription(
+          "Personalize seu perfil escolhendo os cargos abaixo.\n\n" +
+          "Clique em um botão para **adicionar** o cargo. Se clicar novamente, ele será **removido** automaticamente.\n\n" +
+          "**Cargos disponíveis**\n" + roles.map((role) => `✨ ${role}`).join("\n"),
+        )
+        .setFooter({ text: "Seus cargos, suas escolhas" })
+        .setTimestamp();
+
+      const components = rolePanelButtons(
+        roles.map((role) => ({ id: role.id, label: role.name })),
+      );
+      await targetChannel.send({ embeds: [panelEmbed], components });
+      await respond(interaction, {
+        content: "✅ Painel padrão de cargos publicado neste canal.",
+        ephemeral: true,
+      });
+      return;
+    }
+
+    if (interaction.commandName === "divulgar") {
+      const kind = interaction.options.getSubcommand(true) as MediaPromoKind;
+      const link = interaction.options.getString("link", true);
+      let info;
+      try {
+        info = await getMediaPromoInfo(link);
+      } catch (error) {
+        await respond(interaction, {
+          content: error instanceof Error ? error.message : "Informe um link HTTPS válido.",
+          ephemeral: true,
+        });
+        return;
+      }
+
+      // Publica no mesmo canal onde o moderador digitou o comando.
+      // Não exige título, cor, imagem, menção ou canal extra.
+      const guild = interaction.guild;
+      const channelId = interaction.channelId;
+      const targetChannel = guild && channelId ? await guild.channels.fetch(channelId).catch(() => null) : null;
+      if (
+        !targetChannel ||
+        (targetChannel.type !== ChannelType.GuildText &&
+          targetChannel.type !== ChannelType.GuildAnnouncement)
+      ) {
+        await respond(interaction, {
+          content: "Use /divulgar em um canal de texto ou de anúncios do servidor.",
+          ephemeral: true,
+        });
+        return;
+      }
+      if (!(await ensureChannelAccess(interaction, targetChannel))) return;
+
+      const { embed, buttons } = buildMediaPromo(kind, info);
+      await targetChannel.send({
+        embeds: [embed],
+        components: [buttons],
+        allowedMentions: { parse: [] },
+      });
+      await respond(interaction, {
+        content: kind === "live" ? "🔴 Divulgação da live publicada!" : "🎬 Divulgação do vídeo publicada!",
+        ephemeral: true,
+      });
+      return;
+    }
+
+
+
+    const legacyCommandMessage =
+      interaction.commandName === "painel-tickets"
+        ? "Este comando antigo foi substituído. Use **/painel ticket** para publicar o painel de atendimento."
+        : "Este comando não está mais disponível. Confira os comandos atuais do servidor.";
+    await respond(interaction, {
+      content: legacyCommandMessage,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (interaction.isModalSubmit()) {
+    if (interaction.customId === "announcement_media_modal") {
+      await interaction.deferReply({ ephemeral: true });
+      if (!interaction.guild) {
+        await interaction.editReply("Este anúncio só pode ser concluído dentro de um servidor.");
+        return;
+      }
+
+      const key = announcementKey(interaction.guild.id, interaction.user.id);
+      const pending = pendingAnnouncements.get(key);
+      pendingAnnouncements.delete(key);
+      if (!pending || Date.now() - pending.createdAt > 10 * 60_000) {
+        await interaction.editReply("Este anúncio expirou. Execute `/anunciar` novamente.");
+        return;
+      }
+
+      const targetChannel = await interaction.guild.channels.fetch(pending.channelId).catch(() => null);
+      if (!targetChannel || (targetChannel.type !== ChannelType.GuildText && targetChannel.type !== ChannelType.GuildAnnouncement)) {
+        await interaction.editReply("O canal original do anúncio não está mais disponível.");
+        return;
+      }
+
+      const collection = interaction.fields.getUploadedFiles("anuncio_midias", false);
+      const media = collection ? [...collection.values()] : [];
+      if (media.length > MAX_ANNOUNCEMENT_MEDIA_ITEMS) {
+        await interaction.editReply(`Selecione no máximo ${MAX_ANNOUNCEMENT_MEDIA_ITEMS} arquivos.`);
+        return;
+      }
+      if (media.some((file) => !isAcceptedAnnouncementMedia(file.name, file.contentType))) {
+        await interaction.editReply("Use somente imagens PNG/JPG/GIF/WebP ou vídeos MP4/MOV/WebM.");
+        return;
+      }
+      if (media.some((file) => file.size > MAX_ANNOUNCEMENT_MEDIA_BYTES)) {
+        await interaction.editReply("Cada foto ou vídeo pode ter no máximo 20 MB.");
+        return;
+      }
+
+      const uploads: AttachmentBuilder[] = [];
+      const uploadedNames: string[] = [];
+      try {
+        for (const [index, file] of media.entries()) {
+          const response = await fetch(file.url, { signal: AbortSignal.timeout(20_000) });
+          if (!response.ok) throw new Error(`Não foi possível obter ${file.name} (${response.status}).`);
+          const bytes = Buffer.from(await response.arrayBuffer());
+          if (bytes.byteLength > MAX_ANNOUNCEMENT_MEDIA_BYTES) throw new Error(`${file.name} ultrapassou 20 MB.`);
+          const safeName = `${index + 1}_${announcementMediaName(file.name)}`;
+          uploads.push(new AttachmentBuilder(bytes, { name: safeName }));
+          uploadedNames.push(safeName);
+        }
+      } catch (error) {
+        await interaction.editReply(error instanceof Error ? error.message : "Não consegui preparar uma das mídias.");
+        return;
+      }
+
+      const roleMention = pending.roleId ? `<@&${pending.roleId}>\n\n` : "";
+      const body = pending.message ? `\n${pending.message}` : "";
+      const container = new ContainerBuilder()
+        .setAccentColor(pending.color)
+        .addTextDisplayComponents(
+          new TextDisplayBuilder().setContent(`${roleMention}## ${pending.title}${body}`.slice(0, 3900)),
+        );
+
+      if (uploadedNames.length) {
+        const gallery = new MediaGalleryBuilder().addItems(
+          ...uploadedNames.map((name) => new MediaGalleryItemBuilder().setURL(`attachment://${name}`)),
+        );
+        container.addMediaGalleryComponents(gallery);
+      }
+
+      container.addTextDisplayComponents(
+        new TextDisplayBuilder().setContent("-# Comunicado oficial"),
+      );
+
+      await targetChannel.send({
+        components: [container],
+        files: uploads,
+        flags: MessageFlags.IsComponentsV2,
+        allowedMentions: { parse: [], roles: pending.roleId ? [pending.roleId] : [] },
+      });
+
+      await interaction.editReply(
+        uploadedNames.length
+          ? `✅ Anúncio publicado com **${uploadedNames.length} mídia(s)**. Texto em cima e galeria abaixo.`
+          : "✅ Anúncio publicado.",
+      );
+      return;
+    }
+
+    if (interaction.customId === "ticket_purchase_modal") {
+      await interaction.deferReply({ ephemeral: true });
+      const purchaseData: PurchaseTicketData = {
+        product: interaction.fields.getTextInputValue("produto").trim(),
+        robloxUser: interaction.fields.getTextInputValue("roblox_usuario").trim(),
+        details: interaction.fields.getTextInputValue("detalhes").trim(),
+      };
+      const key = `${interaction.guildId ?? "dm"}:${interaction.user.id}:compras`;
+      if (openingTickets.has(key)) {
+        await interaction.editReply("Seu ticket de compras já está sendo criado.");
+        return;
+      }
+      openingTickets.add(key);
+      try { await createTicket(interaction, "compras", purchaseData); }
+      finally { openingTickets.delete(key); }
+      return;
+    }
+    if (interaction.customId.startsWith("shield_cfg_")) {
+      if (!interaction.guild) {
+        await interaction.reply({ content: "Este controle só funciona dentro do servidor.", ephemeral: true });
+        return;
+      }
+      await interaction.deferReply({ ephemeral: true });
+
+      let result;
+      if (interaction.customId === "shield_cfg_verification_publish") {
+        const channelId = parseSnowflakeReference(interaction.fields.getTextInputValue("canal"));
+        const roleId = parseSnowflakeReference(interaction.fields.getTextInputValue("cargo"));
+        result = await shield.panelAction(interaction.guild, interaction.user.id, "verification_publish", {
+          channelId: channelId ?? undefined,
+          roleId: roleId ?? undefined,
+        });
+      } else {
+        const value = interaction.fields.getTextInputValue("valor");
+        const parsedId = parseSnowflakeReference(value);
+        const actionByModal: Record<string, string> = {
+          shield_cfg_bot_add: "bot_add",
+          shield_cfg_bot_remove: "bot_remove",
+          shield_cfg_team_add: "team_add",
+          shield_cfg_team_remove: "team_remove",
+          shield_cfg_log_channel: "log_channel",
+          shield_cfg_incident_detail: "incident",
+        };
+        const action = actionByModal[interaction.customId];
+        if (!action) {
+          await interaction.editReply("Ação de configuração desconhecida.");
+          return;
+        }
+        result = action === "incident"
+          ? await shield.panelAction(interaction.guild, interaction.user.id, action, { incidentId: value.trim() })
+          : action === "log_channel"
+            ? await shield.panelAction(interaction.guild, interaction.user.id, action, { channelId: parsedId ?? undefined })
+            : await shield.panelAction(interaction.guild, interaction.user.id, action, { targetId: parsedId ?? undefined });
+      }
+
+      await interaction.editReply({ content: result.content, embeds: result.embeds });
+      return;
+    }
+
+    if (!interaction.customId.startsWith("ticket_member_modal:")) return;
+    await interaction.deferReply({ ephemeral: true });
+    const action = interaction.customId.split(":")[1];
+    const channel = await fetchInteractionTextChannel(interaction);
+    if (!channel || channel.type !== ChannelType.GuildText || !ticketMetaFromChannel(channel)) {
+      await interaction.editReply("Este modal só pode ser usado dentro de um ticket válido.");
+      return;
+    }
+    const userId = parseUserReference(interaction.fields.getTextInputValue("usuario"));
+    if (!userId) {
+      await interaction.editReply("Informe um ID numérico válido ou uma menção de usuário.");
+      return;
+    }
+    const result = action === "add"
+      ? await addTicketMember(channel, interaction.user.id, userId)
+      : await removeTicketMember(channel, interaction.user.id, userId);
+    await interaction.editReply(result);
+    return;
+  }
+
+  if (interaction.isStringSelectMenu() && interaction.customId === "ticket_category_select") {
+    const type = interaction.values[0] as TicketType;
+    if (!ticketTypes.some((ticket) => ticket.id === type)) {
+      await interaction.reply({ content: "Categoria de ticket inválida.", ephemeral: true });
+      return;
+    }
+    if (type === "compras") {
+      await interaction.showModal(purchaseTicketModal());
+      return;
+    }
+    await interaction.deferReply({ ephemeral: true });
+    const key = `${interaction.guildId ?? "dm"}:${interaction.user.id}:${type}`;
+    if (openingTickets.has(key)) {
+      await interaction.editReply("Seu ticket já está sendo criado. Confira a resposta anterior.");
+      return;
+    }
+    openingTickets.add(key);
+    try { await createTicket(interaction, type); }
+    finally { openingTickets.delete(key); }
+    return;
+  }
+
+  if ((interaction.isButton() || interaction.isChannelSelectMenu()) && interaction.customId.startsWith("log_route_")) {
+    const guild = interaction.guild;
+    if (!guild || !shield.isOwner(interaction.user.id) || !shield.isTargetGuild(guild.id)) {
+      await interaction.reply({content:"⛔ Configuração de logs exclusiva do proprietário no servidor autorizado.",ephemeral:true});
+      return;
+    }
+    const [action, rawKind] = interaction.customId.split(":");
+    if(interaction.isButton() && action==="log_route_check"){await interaction.deferUpdate();await interaction.editReply(await buildLogRouteCheck(guild,shield.logChannelId||null));return;}
+    if (!rawKind || !isLogRouteKind(rawKind) || !((interaction.isButton() && (action === "log_route_pick" || action === "log_route_reset")) || (interaction.isChannelSelectMenu() && action === "log_route_select"))) {
+      await interaction.reply({content:"Ação de logs inválida.",ephemeral:true});
+      return;
+    }
+    await interaction.deferUpdate();
+    const legacy = shield.logChannelId || null;
+    if (action === "log_route_pick") {
+      await interaction.editReply(await buildLogRoutePicker(guild, legacy, rawKind));
+      return;
+    }
+    const id = interaction.isChannelSelectMenu() ? interaction.values[0] : null;
+    if (id === undefined) {
+      await interaction.editReply(await buildLogRoutePicker(guild, legacy, rawKind, "⚠️ Selecione um canal."));
+      return;
+    }
+    if (id) {
+      const invalid = await validateLogChannel(guild, id,rawKind.startsWith("ticket_"));
+      if (invalid) {
+        await interaction.editReply(await buildLogRoutePicker(guild, legacy, rawKind, "⚠️ " + invalid));
+        return;
+      }
+    }
+    try {
+      const storage = await saveLogRoute(guild.id, rawKind, id);
+      const notice = (id ? "✅ Destino salvo: <#" + id + ">." : "✅ Destino padrão restaurado.") +
+        (storage === "local" && process.env.DATABASE_URL ? " Banco indisponível; salvo localmente." : storage === "database" ? " Salvo no banco; arquivo local indisponível." : "");
+      await interaction.editReply(await buildLogRoutingPanel(guild, legacy, notice));
+    } catch {
+      await interaction.editReply(await buildLogRoutePicker(guild, legacy, rawKind, "⚠️ Não consegui confirmar o salvamento. Confira o armazenamento e atualize antes de tentar novamente."));
+    }
+    return;
+  }
+
+  if ((interaction.isUserSelectMenu() || interaction.isChannelSelectMenu() || interaction.isRoleSelectMenu()) && interaction.customId.startsWith("shield_select:")) {
+    const guild = interaction.guild;
+    if (!guild || !shield.isOwner(interaction.user.id) || !shield.isTargetGuild(guild.id)) {
+      await interaction.reply({content:"⛔ Configuração exclusiva do proprietário no servidor autorizado.",ephemeral:true});
+      return;
+    }
+    const [, action, channelId] = interaction.customId.split(":");
+    const selected = interaction.values[0];
+    if (!selected || !/^\d{15,22}$/.test(selected)) {
+      await interaction.reply({content:"Seleção inválida.",ephemeral:true});
+      return;
+    }
+    if (interaction.isChannelSelectMenu() && action === "verification_channel") {
+      await interaction.update({
+        content: "Canal selecionado: <#" + selected + ">. Agora escolha o cargo que será entregue aos membros aprovados. A seleção publica o painel.",
+        components: [new ActionRowBuilder<RoleSelectMenuBuilder>().addComponents(new RoleSelectMenuBuilder().setCustomId("shield_select:verification_role:" + selected).setPlaceholder("Escolher cargo de verificação").setMinValues(1).setMaxValues(1))],
+        allowedMentions:{parse:[]},
+      });
+      return;
+    }
+    if (interaction.isRoleSelectMenu() && action === "verification_role" && channelId && /^\d{15,22}$/.test(channelId)) {
+      await interaction.deferUpdate();
+      const result = await shield.panelAction(guild, interaction.user.id, "verification_publish", {channelId,roleId:selected});
+      await interaction.editReply({content:result.content ?? "Configuração concluída.",embeds:result.embeds ?? [],components:[],allowedMentions:{parse:[]}});
+      return;
+    }
+    if (interaction.isUserSelectMenu() && ["bot_add","bot_remove","team_add","team_remove"].includes(action ?? "")) {
+      await interaction.deferUpdate();
+      const result = await shield.panelAction(guild, interaction.user.id, action!, {targetId:selected});
+      await interaction.editReply({content:result.content ?? "Configuração concluída.",embeds:result.embeds ?? [],components:[],allowedMentions:{parse:[]}});
+      return;
+    }
+    await interaction.reply({content:"Ação de segurança inválida.",ephemeral:true});
+    return;
+  }
+
+  if (!interaction.isButton()) return;
+
+  if (interaction.customId === "verification_check") {
+    await handleVerificationButton(interaction);
+    return;
+  }
+
+  if (interaction.customId === "ticket_start") {
+    await interaction.reply({
+      content: "**🎫 Central de Atendimento**\nSelecione no menu abaixo o assunto que corresponde à sua solicitação. A equipe do servidor atenderá você assim que possível.",
+      components: [ticketCategorySelect()],
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (interaction.customId.startsWith("shield_manual:")) {
+    if (!interaction.guild || !shield.isOwner(interaction.user.id) || !shield.isTargetGuild(interaction.guild.id)) {
+      await interaction.reply({content:"⛔ Configuração exclusiva do proprietário.",ephemeral:true});
+      return;
+    }
+    const action = interaction.customId.split(":")[1] ?? "";
+    if (!["bot_add","bot_remove","team_add","team_remove"].includes(action)) {
+      await interaction.reply({content:"Ação inválida.",ephemeral:true});
+      return;
+    }
+    await interaction.showModal(securitySingleIdModal("shield_cfg_" + action, action.endsWith("_add") ? "Adicionar conta" : "Remover conta", "ID da conta", "Cole o ID da conta"));
+    return;
+  }
+
+  if (interaction.customId.startsWith("admin_security:")) {
+    if (!interaction.guild || !canUseAdminPanel(interaction)) {
+      await interaction.reply({ content: "⛔ Painel restrito à administração.", ephemeral: true }).catch(() => undefined);
+      return;
+    }
+    if (!shield.isOwner(interaction.user.id)) {
+      await interaction.reply({ content: "⛔ Os controles do Shield são exclusivos do proprietário configurado em SECURITY_OWNER_ID.", ephemeral: true });
+      return;
+    }
+
+    const action = interaction.customId.split(":")[1] ?? "";
+    if (action === "config") {
+      await interaction.update(buildAdminSecurityConfigPanel(interaction.guild, shield.panelState(interaction.guild.id)));
+      return;
+    }
+    if (action === "back") {
+      await interaction.deferUpdate();
+      await interaction.editReply(await buildAdminPanel(client, interaction.guild, "security", shield.panelState(interaction.guild.id)));
+      return;
+    }
+
+    if (!shield.isTargetGuild(interaction.guild.id)) {
+      await interaction.reply({content:"Este controle só funciona no servidor autorizado.",ephemeral:true});
+      return;
+    }
+    if (["bot_add","bot_remove","team_add","team_remove"].includes(action)) {
+      const selector = new UserSelectMenuBuilder().setCustomId("shield_select:" + action)
+        .setPlaceholder(action.startsWith("bot_") ? "Selecionar conta de bot" : "Selecionar membro")
+        .setMinValues(1).setMaxValues(1);
+      await interaction.reply({content:"Escolha a conta para " + (action.endsWith("_add") ? "adicionar à lista." : "remover da lista.") + " Se a conta não aparecer, use o ID.",ephemeral:true,components:[
+        new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(selector),
+        new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId("shield_manual:" + action).setLabel("Usar ID").setStyle(ButtonStyle.Secondary)),
+      ]});
+      return;
+    }
+    if (action === "log_channel") {
+      await interaction.deferUpdate();
+      await interaction.editReply(await buildLogRoutePicker(interaction.guild, shield.logChannelId || null, "security"));
+      return;
+    }
+    if (action === "verification_publish") {
+      const selector = new ChannelSelectMenuBuilder().setCustomId("shield_select:verification_channel").setChannelTypes(ChannelType.GuildText).setPlaceholder("Escolher canal de verificação").setMinValues(1).setMaxValues(1);
+      await interaction.reply({content:"Escolha o canal de texto onde será publicado o painel de verificação.",ephemeral:true,components:[new ActionRowBuilder<ChannelSelectMenuBuilder>().addComponents(selector)]});
+      return;
+    }
+    const modalByAction: Record<string, ModalBuilder> = {
+      bot_add: securitySingleIdModal("shield_cfg_bot_add", "Permitir bot", "ID do bot", "Cole o ID da conta do bot"),
+      bot_remove: securitySingleIdModal("shield_cfg_bot_remove", "Remover bot", "ID do bot", "Cole o ID da conta do bot"),
+      team_add: securitySingleIdModal("shield_cfg_team_add", "Adicionar equipe", "ID do usuário", "Cole o ID do membro"),
+      team_remove: securitySingleIdModal("shield_cfg_team_remove", "Remover equipe", "ID do usuário", "Cole o ID do membro"),
+      log_channel: securitySingleIdModal("shield_cfg_log_channel", "Canal de segurança", "ID do canal privado", "Cole o ID do canal"),
+      incident_detail: securitySingleIdModal("shield_cfg_incident_detail", "Abrir incidente", "ID do incidente", "Ex.: INC-2026-00428"),
+    };
+    const modal = modalByAction[action];
+    if (modal) {
+      await interaction.showModal(modal);
+      return;
+    }
+
+    if (action === "snapshot_restore") {
+      await interaction.deferReply({ephemeral:true});
+      const snapshot=await loadGuildSnapshot(interaction.guild.id);
+      if(!snapshot){await interaction.editReply("Nenhum backup válido.");return;}
+      const row=new ActionRowBuilder<ButtonBuilder>().addComponents(
+        ...(["all","roles","channels"] as const).map(scope=>new ButtonBuilder().setCustomId("admin_security:restore_confirm:"+scope+":"+snapshot.createdAt).setLabel({all:"Tudo",roles:"Só cargos",channels:"Só canais"}[scope]).setStyle(ButtonStyle.Danger)),
+        new ButtonBuilder().setCustomId("admin_security:restore_cancel").setLabel("Cancelar").setStyle(ButtonStyle.Secondary));
+      await interaction.editReply({content:"Confirme o escopo do backup de <t:"+Math.floor(snapshot.createdAt/1000)+":F>. Apenas objetos ausentes; mensagens e membros não são restaurados.",components:[row]});return;
+    }
+    if(action==="restore_cancel"){await interaction.update({content:"Cancelado.",components:[]});return;}
+    if(action==="restore_confirm"){
+      const [,,scope,at]=interaction.customId.split(":");
+      if((scope!=="all"&&scope!=="roles"&&scope!=="channels")||!at||!Number.isSafeInteger(Number(at))){await interaction.update({content:"Confirmação inválida. Abra novamente.",components:[]});return;}
+      await interaction.deferUpdate();
+      await interaction.editReply({content:"Restaurando...",components:[]});
+      const result=await shield.panelAction(interaction.guild,interaction.user.id,"snapshot_restore",{restoreScope:scope,snapshotAt:Number(at)});
+      await interaction.editReply({content:result.content,embeds:result.embeds,components:[]});return;
+    }
+
+    const directActions = new Set([
+      "status", "toggle", "mode", "safe", "incidents", "snapshot_create", "snapshot_preview", "release", "test",
+      "bot_list", "team_list", "verification_status", "verification_disable", "maintenance",
+    ]);
+    if (!directActions.has(action)) {
+      await interaction.reply({ content: "Ação de segurança desconhecida.", ephemeral: true });
+      return;
+    }
+
+    // Acknowledge the button before database, Discord REST or snapshot work.
+    // Keep the original panel intact for read-only actions and private results.
+    const stateChanging = new Set(["toggle", "mode", "safe", "snapshot_create", "release", "test", "verification_disable", "maintenance"]);
+    if (stateChanging.has(action)) {
+      await interaction.deferUpdate();
+      const result = await shield.panelAction(interaction.guild, interaction.user.id, action);
+      const onConfigPage = action === "verification_disable";
+      if (onConfigPage) {
+        await interaction.editReply(buildAdminSecurityConfigPanel(interaction.guild, shield.panelState(interaction.guild.id)));
+      } else {
+        await interaction.editReply(await buildAdminPanel(client, interaction.guild, "security", shield.panelState(interaction.guild.id)));
+      }
+      if (result.content || result.embeds?.length) {
+        await interaction.followUp({ content: result.content, embeds: result.embeds, ephemeral: true, allowedMentions: { parse: [] } });
+      }
+      return;
+    }
+
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const result = await shield.panelAction(interaction.guild, interaction.user.id, action);
+    await interaction.editReply({ content: result.content, embeds: result.embeds, allowedMentions: { parse: [] } });
+    return;
+  }
+
+  if (interaction.customId.startsWith("admin_panel:")) {
+    if (!interaction.guild || !canUseAdminPanel(interaction)) {
+      await interaction.reply({ content: "⛔ Painel restrito à administração.", ephemeral: true }).catch(() => undefined);
+      return;
+    }
+    const [, rawSection] = interaction.customId.split(":");
+    if (rawSection === "close") {
+      await interaction.update({ content: "Painel administrativo fechado.", embeds: [], components: [] });
+      return;
+    }
+    if (rawSection === "log_routes") {
+      if (!shield.isOwner(interaction.user.id) || !shield.isTargetGuild(interaction.guild.id)) {
+        await interaction.reply({content:"Configuração de logs exclusiva do proprietário no servidor autorizado.",ephemeral:true});
+        return;
+      }
+      await interaction.deferUpdate();
+      await interaction.editReply(await buildLogRoutingPanel(interaction.guild, shield.logChannelId || null));
+      return;
+    }
+    if (rawSection === "diagnostics" && (!shield.isOwner(interaction.user.id) || !shield.isTargetGuild(interaction.guild.id))) {
+      await interaction.reply({ content: "Diagnóstico disponível apenas ao proprietário configurado, no servidor autorizado.", ephemeral: true });
+      return;
+    }
+    const section: AdminSection = rawSection === "roblox" || rawSection === "logs" || rawSection === "tickets" || rawSection === "security" || rawSection === "diagnostics" ? rawSection : "home";
+    await interaction.deferUpdate();
+    await interaction.editReply(await buildAdminPanel(client, interaction.guild, section, shield.panelState(interaction.guild.id)));
+    return;
+  }
+
+  if (interaction.customId === "ticket_add" || interaction.customId === "ticket_remove") {
+    const channel = await fetchInteractionTextChannel(interaction);
+    if (!channel || channel.type !== ChannelType.GuildText) {
+      await interaction.reply({ content: "Este botão só funciona dentro de um ticket.", ephemeral: true });
+      return;
+    }
+    const meta = ticketMetaFromChannel(channel);
+    if (!meta || !canManageTicketMembers(channel.guild, interaction.user.id, meta)) {
+      await interaction.reply({ content: "Somente a equipe autorizada pode gerenciar pessoas deste ticket.", ephemeral: true });
+      return;
+    }
+    await interaction.showModal(memberModal(interaction.customId === "ticket_add" ? "add" : "remove"));
+    return;
+  }
+
+  if (interaction.customId.startsWith("ticket_rate:")) {
+    const [, guildId, ticketId, rating] = interaction.customId.split(":");
+    const guild = guildId ? client.guilds.cache.get(guildId) : null;
+    if (guild && ticketId && rating) {
+      const numericRating = Number(rating);
+      if (Number.isInteger(numericRating) && numericRating >= 1 && numericRating <= 5) {
+        void recordTicketRating({ guildId: guild.id, ticketId, userId: interaction.user.id, rating: numericRating });
+      }
+      await sendGeneralLog(guild, {
+        embeds: [new EmbedBuilder().setColor(0xfee75c).setTitle("⭐ Avaliação de atendimento").setDescription(`<@${interaction.user.id}> avaliou o ticket \`${ticketId}\` com **${rating}/5**.`).setTimestamp()],
+        allowedMentions: { parse: [] },
+      });
+    }
+    await interaction.reply({ content: "Obrigado pela avaliação! ❤️", ephemeral: true }).catch(async () => {
+      await interaction.reply({ content: "Obrigado pela avaliação! ❤️" }).catch(() => undefined);
+    });
+    return;
+  }
+
+  await interaction.deferReply({
+    ephemeral: !interaction.customId.startsWith("denuncia_provas:"),
+  });
+
+  if (interaction.customId.startsWith("ticket_category:") || interaction.customId.startsWith("ticket_open:")) {
+    const type = interaction.customId.split(":")[1] as TicketType;
+    if (ticketTypes.some((ticket) => ticket.id === type)) {
+      const key = `${interaction.guildId ?? "dm"}:${interaction.user.id}:${type}`;
+      if (openingTickets.has(key)) {
+        await respond(interaction, { content: "Seu ticket já está sendo criado. Confira a resposta anterior.", ephemeral: true });
+        return;
+      }
+      openingTickets.add(key);
+      try { await createTicket(interaction, type); }
+      finally { openingTickets.delete(key); }
+    }
+    return;
+  }
+
+  if (interaction.customId === "ticket_claim") {
+    const channel = await fetchInteractionTextChannel(interaction);
+    const result = channel?.type === ChannelType.GuildText ? await claimTicket(channel, interaction.user.id) : "Este botão só funciona dentro de um ticket.";
+    await interaction.editReply(result);
+    return;
+  }
+
+  if (interaction.customId === "ticket_close") {
+    const channel = await fetchInteractionTextChannel(interaction);
+    if (!channel || channel.type !== ChannelType.GuildText) {
+      await interaction.editReply("Este botão só funciona dentro de um ticket.");
+      return;
+    }
+    const meta = ticketMetaFromChannel(channel);
+    if (!meta || (interaction.user.id !== meta.ownerId && !isTicketStaff(channel.guild, interaction.user.id))) {
+      await interaction.editReply("Somente o titular ou a equipe pode fechar este ticket.");
+      return;
+    }
+    await interaction.editReply({ content: "Tem certeza? O transcript será salvo antes de remover o canal.", components: [ticketCloseConfirmButtons()] });
+    return;
+  }
+
+  if (interaction.customId === "ticket_close_cancel") {
+    await interaction.editReply({ content: "Fechamento cancelado.", components: [] });
+    return;
+  }
+
+  if (interaction.customId === "ticket_close_confirm") {
+    const channel = await fetchInteractionTextChannel(interaction);
+    if (!channel || channel.type !== ChannelType.GuildText) {
+      await interaction.editReply("Este botão só funciona dentro de um ticket.");
+      return;
+    }
+    if (closingTickets.has(channel.id)) {
+      await interaction.editReply("Este ticket já está sendo encerrado.");
+      return;
+    }
+    closingTickets.add(channel.id);
+    try {
+      await interaction.editReply("Fechando o ticket e gerando o transcript...");
+      await closeTicket(channel, interaction.user.id);
+    } catch (error) {
+      await interaction.editReply(error instanceof Error ? error.message : "Não foi possível fechar o ticket. O canal foi preservado.").catch(() => undefined);
+    } finally {
+      closingTickets.delete(channel.id);
+    }
+    return;
+  }
+
+  if (interaction.customId.startsWith("role_toggle:")) {
+    const parts = interaction.customId.split(":");
+    const roleId = parts.length === 2 ? parts[1] : parts[2];
+    if (roleId) await toggleRole(interaction, roleId);
+    return;
+  }
+
+  if (interaction.customId.startsWith("denuncia_provas:")) {
+    const answer = interaction.customId.split(":")[1];
+    if (answer === "nao") {
+      await interaction.editReply({ content: "Denúncias sem provas concretas não podem ser analisadas. Adicione prints ou vídeos e tente novamente." });
+    } else {
+      await interaction.editReply({ content: "Obrigado. A equipe poderá analisar a denúncia com as provas enviadas." });
+    }
+  }
+
+}
+
+client.once(Events.ClientReady, async (readyClient) => {
+  try {
+    await shield.initialize();
+    const rest = new REST({ version: "10" }).setToken(config.token);
+    const applicationId = readyClient.user.id;
+    const configuredGuildId = config.guildId || securityEnvironment.guildId;
+    const guildIds = configuredGuildId
+      ? (readyClient.guilds.cache.has(configuredGuildId) ? [configuredGuildId] : [])
+      : (readyClient.guilds.cache.size === 1 ? [...readyClient.guilds.cache.keys()] : []);
+    if(!guildIds.length) throw new Error("Configure DISCORD_GUILD_ID para um servidor conectado; registro de comandos interrompido.");
+
+    const result = await syncBotCommands({
+      guildIds,
+      commands: commandDefinitions,
+      guildOnly:true,
+      purgeLegacyGlobalCommands: config.purgeLegacyGlobalCommands,
+      api: {
+        replaceGuild: async (guildId, commands) => {
+          await rest.put(Routes.applicationGuildCommands(applicationId, guildId), {
+            body: commands,
+          });
+        },
+        replaceGlobal: async (commands) => {
+          await rest.put(Routes.applicationCommands(applicationId), {
+            body: commands,
+          });
+        },
+        listGlobal: async (): Promise<RegisteredGlobalCommand[]> => {
+          const response = await rest.get(Routes.applicationCommands(applicationId));
+          if (!Array.isArray(response)) {
+            throw new Error("A API do Discord retornou uma lista global inválida.");
+          }
+          return response as RegisteredGlobalCommand[];
+        },
+        deleteGlobal: async (commandId) => {
+          await rest.delete(Routes.applicationCommand(applicationId, commandId));
+        },
+      },
+    });
+
+    console.log(
+      result.scope === "guild"
+        ? `Bot conectado como ${readyClient.user.tag}. ${commandDefinitions.length} comandos sincronizados em ${result.guildCount} servidor(es). ` +
+          (result.purgedAllGlobalCommands
+            ? "Comandos globais antigos deste aplicativo apagados (limpeza total solicitada)."
+            : `${result.deletedGlobalCount} versão(ões) global(is) duplicada(s) removida(s).`)
+        : `Bot conectado como ${readyClient.user.tag}. ${commandDefinitions.length} comandos registrados globalmente: nenhum servidor conectado.`,
+    );
+  } catch (error) {
+    console.error("Falha ao registrar/sincronizar comandos Discord:", error);
+  }
+});
+
+registerSecurityEvents(client,shield);
+
+client.on(Events.InteractionCreate, async (interaction) => {
+  const started = performance.now();
+  let failed = false;
+  if (interaction.isChatInputCommand()) {
+    console.log(`[INTERAÇÃO] Slash /${interaction.commandName} recebido (guild ${interaction.guildId ?? "DM"}).`);
+  }
+  try {
+    await handleInteraction(interaction);
+  } catch (error) {
+    failed = true;
+    console.error("Falha ao processar interação:", error);
+    const discordCode =
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      typeof error.code === "number"
+        ? error.code
+        : undefined;
+    const explanations: Record<number, string> = {
+      50001: "O bot não tem acesso ao canal ou servidor. Confira as permissões do canal e da categoria.",
+      50013: "O bot não tem a permissão necessária. Confira as permissões e a posição do cargo do bot acima dos cargos que ele gerencia.",
+      50035: "O Discord rejeitou os dados da operação. Atualize o painel e confira os campos selecionados.",
+      10003: "O canal não existe mais ou não está disponível. Atualize o painel e selecione outro canal.",
+      10007: "O membro não está mais disponível neste servidor.",
+      10011: "O cargo não existe mais. Selecione um cargo válido.",
+      10062: "A interação expirou. Abra novamente o painel e confira o estado antes de repetir.",
+      40060: "Esta interação já foi confirmada. Atualize o painel antes de tentar novamente.",
+      429: "O Discord está limitando temporariamente as solicitações. Aguarde um momento e atualize o painel.",
+    };
+    const content = (discordCode === undefined ? undefined : explanations[discordCode])
+      ?? "Não foi possível confirmar a conclusão desta ação. Atualize o painel e confira se a alteração já foi aplicada antes de tentar novamente.";
+    const message: InteractionReplyOptions = { content: "⚠️ " + content, flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } };
+    if (interaction.isRepliable()) {
+      // A deferred reply has an outstanding response; a deferred update refers
+      // to the existing panel, which must never be replaced by an error.
+      const updatesPanel = ((interaction.isButton() || interaction.isChannelSelectMenu()) && interaction.customId.startsWith("log_route_")) ||
+        ((interaction.isUserSelectMenu() || interaction.isRoleSelectMenu() || interaction.isChannelSelectMenu()) && interaction.customId.startsWith("shield_select:")) || (interaction.isButton() && (
+        interaction.customId.startsWith("admin_panel:") ||
+        ["back", "toggle", "mode", "safe", "snapshot_create", "release", "test", "verification_disable", "maintenance", "log_channel"]
+          .some((action) => interaction.customId === "admin_security:" + action || interaction.customId.startsWith("admin_security:restore_confirm:"))
+      ));
+      if (interaction.deferred && !interaction.replied && !updatesPanel) {
+        await interaction.editReply({ content: message.content, allowedMentions: message.allowedMentions }).catch(() => undefined);
+      } else if (interaction.replied || interaction.deferred) {
+        await interaction.followUp(message).catch(() => undefined);
+      } else {
+        await interaction.reply(message).catch(() => undefined);
+      }
+    }
+  } finally {
+    interactionMetrics.record(performance.now() - started, failed);
+  }
+});
+
+client.on("error", (error) => {
+  console.error("Erro do cliente Discord:", error);
+});
+
+client.on("shardReady", (id) => {
+  console.log(`[DISCORD] ✅ Shard ${id} conectado e pronto.`);
+});
+
+client.on("shardReconnecting", (id) => {
+  console.log(`[DISCORD] 🔄 Shard ${id} reconectando...`);
+});
+
+client.on("shardDisconnect", (event, id) => {
+  console.error(
+    `[DISCORD] ❌ Shard ${id} desconectado. Código: ${event.code} | Motivo: ${event.reason || "sem motivo"}`
+  );
+});
+
+client.on("shardError", (error, id) => {
+  console.error(`[DISCORD] ❌ Erro no shard ${id}:`, error);
+});
+
+client.on("warn", (warning) => {
+  console.warn("[DISCORD] ⚠️ Warning:", warning);
+});
+
+process.on("unhandledRejection", (error) => {
+  console.error("Promise rejeitada sem tratamento:", error);
+});
+
+// Health monitor
+const app = express();
+app.use(express.json({ limit: "128kb" }));
+
+const PORT = Number(
+  process.env.SERVER_PORT ?? process.env.PORT ?? 3000
+);
+const startedAt = Date.now();
+
+registerVerificationOAuthRoutes(
+  app,
+  async (guildId, userId, emailVerified) =>
+    completeOAuthVerification(client, guildId, userId, emailVerified),
+);
+
+registerRobloxBridgeRoutes(app, client);
+
+async function respondHealth(
+  _req: express.Request,
+  res: express.Response
+) {
+  const connected = client.isReady();
+  const storage = await persistenceMode();
+
+  res.status(connected ? 200 : 503).json({
+    service: "Bot Discord",
+    version: "FINAL-1.3",
+    status: connected ? "online" : "discord_disconnected",
+    connected,
+    uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
+    discordPingMs: connected ? client.ws.ping : null,
+    persistence: storage,
+    emailVerification: oauthVerificationConfigured()
+      ? "oauth2"
+      : "discord_native",
+    robloxBridge: robloxBridgeConfigured()
+      ? "configured"
+      : "disabled",
+    robloxEventsSinceBoot: getRobloxBridgeStats().received,
+  });
+}
+
+app.get("/", respondHealth);
+app.get("/health", respondHealth);
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(
+    `Health monitor do Bot Discord disponível na porta ${PORT}`
+  );
+});
+
+let shuttingDown = false;
+
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+
+  shuttingDown = true;
+
+  console.log(`Encerramento gracioso iniciado por ${signal}.`);
+
+  client.destroy();
+  const drained=await Promise.all([auditQueue.drain(),bridgeQueue.drain()]);
+  if(drained.some(ok=>!ok))console.warn("Encerramento: tarefas ainda pendentes.");
+  await shield.flushState();
+  await closePersistence();
+
+  process.exit(0);
+}
+
+process.once("SIGTERM", () => {
+  void shutdown("SIGTERM");
+});
+
+process.once("SIGINT", () => {
+  void shutdown("SIGINT");
+});
+
+console.log("[DISCORD] Testando endpoint do Gateway...");
+
+try {
+  const response = await fetch("https://discord.com/api/v10/gateway",{signal:AbortSignal.timeout(5000)});
+
+  console.log(
+    `[DISCORD] GET /gateway respondeu HTTP ${response.status}`
+  );
+
+  if (response.ok) {
+    const data = (await response.json()) as { url?: string };
+
+    console.log(
+      `[DISCORD] ✅ Gateway encontrado: ${data.url ?? "não informado"}`
+    );
+  }
+} catch (error) {
+  console.error("[DISCORD] ❌ Erro ao acessar Gateway:", error);
+}
+
+console.log("[DISCORD] Iniciando conexão com o Gateway...");
+
+const gatewayTimeout = setTimeout(() => {
+  console.error(
+    `[DISCORD] ❌ TIMEOUT: Gateway não ficou pronto após 30 segundos. ready=${client.isReady()}`
+  );
+}, 30_000);
+
+try {
+  await client.login(config.token);
+
+  clearTimeout(gatewayTimeout);
+
+  console.log(
+    `[DISCORD] client.login concluído. ready=${client.isReady()}`
+  );
+} catch (error) {
+  clearTimeout(gatewayTimeout);
+
+  console.error(
+    "[DISCORD] ❌ Falha ao conectar o bot ao Discord:",
+    error
+  );
+
+  process.exit(1);
+}

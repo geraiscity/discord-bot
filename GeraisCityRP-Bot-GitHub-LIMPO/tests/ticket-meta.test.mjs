@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildTicketTopic, parseTicketTopic } from '../src/ticket-meta.ts';
+import { buildTicketTopic, parseTicketTopic } from '../src/tickets/ticket-meta.ts';
 
 test('Metadados de ticket preservam titular, convidados e atendente', () => {
   const topic = buildTicketTopic({ ownerId:'123456789012345678', type:'suporte', addedUserIds:['223456789012345678','323456789012345678'], claimedBy:'423456789012345678' });

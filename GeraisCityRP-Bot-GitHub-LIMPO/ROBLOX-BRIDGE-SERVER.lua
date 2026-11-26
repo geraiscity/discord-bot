@@ -1,4 +1,4 @@
--- Gerais City RP • Roblox -> Discord Bridge
+-- Roblox -> Discord Bridge
 -- Coloque este ModuleScript em ServerScriptService.
 -- NUNCA coloque a chave em LocalScript, ReplicatedStorage ou qualquer lugar replicado ao cliente.
 -- Ative: Game Settings > Security > Allow HTTP Requests.
@@ -11,7 +11,7 @@ local Bridge = {}
 -- Troque pela URL pública do seu bot/deployment (sem barra no final).
 local BRIDGE_URL = "https://SEU-DOMINIO.replit.app"
 -- Use o mesmo valor do Secret ROBLOX_BRIDGE_SECRET configurado no host do bot.
-local BRIDGE_SECRET = "COLOQUE_UMA_CHAVE_FORTE_AQUI"
+local BRIDGE_SECRET = HttpService:GetSecret("ROBLOX_BRIDGE_SECRET") -- Configure no Creator Hub; nunca no código.
 
 local function playerInfo(player)
 	if not player then return nil end
@@ -33,6 +33,8 @@ end
 function Bridge.Send(eventName, severity, player, data)
 	assert(typeof(eventName) == "string", "eventName precisa ser string")
 	local payload = {
+		protocol = 2,
+		sentAt = DateTime.now().UnixTimestampMillis,
 		eventId = HttpService:GenerateGUID(false),
 		event = eventName,
 		severity = severity or "info",
@@ -54,11 +56,11 @@ function Bridge.Send(eventName, severity, player, data)
 	end)
 
 	if not ok then
-		warn("[Gerais Bridge] Falha HTTP:", result)
+		warn("[Roblox Bridge] Falha HTTP:", result)
 		return false
 	end
 	if not result.Success then
-		warn("[Gerais Bridge] API recusou:", result.StatusCode, result.Body)
+		warn("[Roblox Bridge] API recusou:", result.StatusCode, result.Body)
 		return false
 	end
 	return true

@@ -1,14 +1,13 @@
 import {
   ChannelType,
-  PermissionFlagsBits,
   SlashCommandBuilder,
 } from "discord.js";
 
 export const commandDefinitions = [
   new SlashCommandBuilder()
     .setName("painel")
-    .setDescription("Publica painéis de atendimento do Gerais City.")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels.toString())
+    .setDescription("Publica painéis de atendimento do servidor.")
+    .setDefaultMemberPermissions("0")
     .addSubcommand((sub) =>
       sub
         .setName("ticket")
@@ -24,13 +23,13 @@ export const commandDefinitions = [
 
   new SlashCommandBuilder()
     .setName("painel-admin")
-    .setDescription("Abre o Gerais Control Center privado.")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild.toString()),
+    .setDescription("Abre o Painel administrativo privado.")
+    .setDefaultMemberPermissions("0"),
 
   new SlashCommandBuilder()
     .setName("reaction-role")
     .setDescription("Publica o painel padrão de cargos no canal atual.")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles.toString())
+    .setDefaultMemberPermissions("0")
     .addRoleOption((option) => option.setName("cargo_1").setDescription("Primeiro cargo do painel.").setRequired(true))
     .addRoleOption((option) => option.setName("cargo_2").setDescription("Segundo cargo do painel.").setRequired(false))
     .addRoleOption((option) => option.setName("cargo_3").setDescription("Terceiro cargo do painel.").setRequired(false))
@@ -41,7 +40,7 @@ export const commandDefinitions = [
   new SlashCommandBuilder()
     .setName("anunciar")
     .setDescription("Cria um anúncio e abre um seletor único para fotos ou vídeo.")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages.toString())
+    .setDefaultMemberPermissions("0")
     .addStringOption((option) => option.setName("titulo").setDescription("Título do anúncio.").setMaxLength(200).setRequired(true))
     .addStringOption((option) => option.setName("mensagem").setDescription("Mensagem opcional do anúncio.").setMaxLength(3500).setRequired(false))
     .addStringOption((option) => option.setName("cor").setDescription("Cor hexadecimal opcional, por exemplo #FFD700.").setRequired(false))
@@ -50,7 +49,7 @@ export const commandDefinitions = [
   new SlashCommandBuilder()
     .setName("divulgar")
     .setDescription("Publica vídeos e lives com layout vermelho pronto.")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages.toString())
+    .setDefaultMemberPermissions("0")
     .addSubcommand((subcommand) =>
       subcommand
         .setName("video")
