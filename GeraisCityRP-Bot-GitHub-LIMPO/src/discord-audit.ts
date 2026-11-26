@@ -20,6 +20,12 @@ const actions = new Map<number, [Kind, string]>([
   [AuditLogEvent.MemberBanRemove, ["member", "Banimento removido"]],
   [AuditLogEvent.BotAdd, ["member", "Bot adicionado"]],
   [AuditLogEvent.GuildUpdate, ["server", "Servidor alterado"]],
+  [AuditLogEvent.WebhookCreate, ["server", "Webhook criado"]],
+  [AuditLogEvent.WebhookUpdate, ["server", "Webhook alterado"]],
+  [AuditLogEvent.WebhookDelete, ["server", "Webhook removido"]],
+  [AuditLogEvent.IntegrationCreate, ["server", "Integração criada"]],
+  [AuditLogEvent.IntegrationUpdate, ["server", "Integração alterada"]],
+  [AuditLogEvent.IntegrationDelete, ["server", "Integração removida"]],
 ]);
 const labels: Record<string, string> = {
   name:"Nome", nick:"Apelido", type:"Tipo", parent_id:"Categoria", position:"Posição",

@@ -1831,6 +1831,7 @@ client.once(Events.ClientReady, async (readyClient) => {
 // Auditoria exata do Discord: independente do modo de punição do Shield.
 client.on(Events.GuildAuditLogEntryCreate, (entry, guild) => {
   if (!shield.isTargetGuild(guild.id)) return;
+  void shield.auditWebhook(guild, entry).catch(() => console.warn("Shield: falha na análise de webhook."));
   void deliverDiscordAudit(entry, guild, shield.logChannelId || null)
     .catch(() => console.warn("Auditoria Discord: falha ao processar entrada de auditoria."));
 });
@@ -1884,11 +1885,6 @@ client.on(Events.GuildRoleUpdate, (before, after) => {
 client.on(Events.GuildUpdate, (before, after) => {
   void shield.guildUpdate(before, after).catch((error) => console.error("Shield/servidor:", error));
 });
-client.on(Events.WebhooksUpdate, (channel) => {
-  if (channel.type === ChannelType.GuildText) {
-    void shield.webhookUpdate(channel).catch((error) => console.error("Shield/webhook:", error));
-  }
-});
 client.on(Events.GuildEmojiCreate, (emoji) => {
   void shield.creationAction(emoji.guild, AuditLogEvent.EmojiCreate, emoji.id, "criação de emoji", async () => emoji.delete("Shield: criação em massa / anti-cópia"))
     .catch((error) => console.error("Shield/criação de emoji:", error));
@@ -1907,10 +1903,6 @@ client.on(Events.GuildStickerDelete, (sticker) => {
   void shield.destructiveAction(sticker.guild, AuditLogEvent.StickerDelete, sticker.id, "exclusão de sticker")
     .catch((error) => console.error("Shield/exclusão de sticker:", error));
 });
-client.on(Events.GuildIntegrationsUpdate, (guild) => {
-  void shield.integrationsUpdate(guild).catch((error) => console.error("Shield/integração:", error));
-});
-
 client.on(Events.InteractionCreate, async (interaction) => {
   const started = performance.now();
   let failed = false;

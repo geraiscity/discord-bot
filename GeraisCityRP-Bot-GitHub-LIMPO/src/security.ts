@@ -24,6 +24,13 @@ import {
   scoreJoinRisk,
   shouldQuarantineRoles,
   SlidingCounter,
+  AuditClaims,
+  uniqueAuditEvidence,
+  auditRoleAdditionMatches,
+  auditValueMatches,
+  massActionDecision,
+  shouldQuarantineJoin,
+  type AuditEvidence,
   type SecurityMode,
 } from "./security-core.js";
 import { parseTicketTopic } from "./ticket-meta.js";
@@ -157,7 +164,10 @@ export class GeraisShield {
   private readonly destructive = new SlidingCounter(30_000);
   private readonly creations = new SlidingCounter(30_000);
   private readonly cooldown = new Map<string, number>();
-  private readonly contained = new Set<string>();
+  private readonly auditClaims = new AuditClaims();
+  private readonly auditRequests = new Map<string, Promise<AuditEvidence[]>>();
+  private readonly auditStats = {confirmed:0, unconfirmed:0, replayed:0};
+  private readonly containmentInFlight = new Set<string>();
   private pendingLockdown = false;
   private readonly observedPrivateChannels = new Set<string>();
   private readonly allowedBotIds = new Set(securityEnvironment.allowedBotIds);
@@ -188,6 +198,7 @@ export class GeraisShield {
       incidentCount: this.incidents.length,
       allowedBotCount: this.allowedBotIds.size,
       trustedAdminCount: this.trustedAdminIds.size,
+      auditStats: {...this.auditStats},
     };
   }
 
@@ -904,7 +915,7 @@ export class GeraisShield {
       return;
     }
 
-    const risk = scoreJoinRisk({
+    const riskInput = {
       accountAgeMs: Math.max(0, Date.now() - member.user.createdTimestamp),
       defaultAvatar: member.user.avatar === null,
       username: member.user.username,
@@ -912,10 +923,11 @@ export class GeraisShield {
       raidThreshold: securityEnvironment.joinThreshold,
       isBot: false,
       botAllowed: true,
-    });
+    };
+    const risk = scoreJoinRisk(riskInput);
     if (risk.score >= securityEnvironment.riskThreshold && !this.isCooling(`risk:${member.guild.id}:${member.id}`, 5 * 60_000)) {
       await this.alert(member.guild, "Entrada com Risk Score elevado", `Membro: <@${member.id}> • Score: **${risk.score}**/${securityEnvironment.riskThreshold}. Sinais: ${risk.factors.join(", ") || "nenhum"}.`, count >= securityEnvironment.joinThreshold);
-      if (this.canAutomate() && member.moderatable) {
+      if (this.canAutomate() && member.moderatable && shouldQuarantineJoin(riskInput, securityEnvironment.riskThreshold)) {
         await member.timeout(securityEnvironment.quarantineMinutes * 60_000, `Shield: Risk Score ${risk.score}`).catch(() => undefined);
       }
     }
@@ -944,7 +956,8 @@ export class GeraisShield {
     await this.alert(member.guild, "Bot não autorizado detectado", `Bot: <@${member.id}> • adicionado por: ${actorId ? `<@${actorId}>` : "não identificado"}. O bot não está na allowlist anti-cópia.`, true);
     if (!this.canAutomate()) return;
     if (member.kickable) await member.kick("Shield: bot não autorizado / proteção anti-cópia").catch(() => undefined);
-    if (actorId && !this.isOwner(actorId) && actorId !== this.client.user?.id) await this.contain(member.guild, actorId, "adição de bot não autorizado");
+    // A single bot addition may be a configuration mistake; remove the unapproved bot, not the human administrator.
+    // Repeated destructive activity is handled by the mass-action policy.
   }
 
   private scheduleRecovery(guild: Guild): void {
@@ -1029,21 +1042,42 @@ export class GeraisShield {
     }
   }
 
-  private async executorFromAudit(guild: Guild, type: AuditLogEvent, targetId: string): Promise<string | null> {
+  private async executorFromAudit(guild: Guild, type: AuditLogEvent, targetId: string, matches: (entry:AuditEvidence) => boolean = () => true): Promise<string | null> {
+    const eventAt = Date.now();
+    const key = guild.id + ":" + type;
+    if (!guild.members.me?.permissions.has(PermissionFlagsBits.ViewAuditLog)) {
+      this.auditStats.unconfirmed++;
+      return null;
+    }
     try {
-      await new Promise((done) => setTimeout(done, 900));
-      const entries = await guild.fetchAuditLogs({ type, limit: 10 });
-      const entry = entries.entries.find((item) => item.targetId === targetId && Date.now() - item.createdTimestamp <= 20_000);
-      return entry?.executorId ?? null;
-    } catch { return null; }
+      // Batch simultaneous events of the same type into one REST request.
+      let request = this.auditRequests.get(key);
+      if (!request) {
+        request = (async () => {
+          await new Promise((done) => setTimeout(done, 1000));
+          const logs = await guild.fetchAuditLogs({type,limit:50});
+          return [...logs.entries.values()];
+        })().finally(() => { this.auditRequests.delete(key); });
+        this.auditRequests.set(key, request);
+      }
+      const evidence = uniqueAuditEvidence(await request, targetId, eventAt, matches);
+      if (!evidence) { this.auditStats.unconfirmed++; return null; }
+      if (!this.auditClaims.claim(guild.id + ":" + evidence.id)) { this.auditStats.replayed++; return null; }
+      this.auditStats.confirmed++;
+      return evidence.executorId;
+    } catch { this.auditStats.unconfirmed++; return null; }
+  }
+
+  private exemptActor(guild: Guild, id: string): boolean {
+    return this.isOwner(id) || id === guild.ownerId || id === this.client.user?.id;
   }
 
   private async maybeAutoRestore(guild: Guild): Promise<void> {
     if (!securityEnvironment.autoRestore || this.autoRestoreRunning) return;
-    const snapshot = await loadGuildSnapshot(guild.id);
-    if (!snapshot) return;
     this.autoRestoreRunning = true;
     try {
+      const snapshot = await loadGuildSnapshot(guild.id);
+      if (!snapshot) return;
       const report = await restoreGuildSnapshot(guild, snapshot);
       await this.alert(guild, "Auto-restauração anti-nuke", `Snapshot aplicado. Cargos: ${report.rolesCreated} • canais: ${report.channelsCreated} • ignorados: ${report.skipped}.`, true);
     } finally { this.autoRestoreRunning = false; }
@@ -1052,55 +1086,72 @@ export class GeraisShield {
   async destructiveAction(guild: Guild, type: AuditLogEvent, targetId: string, label: string): Promise<void> {
     if (!this.isActive(guild.id)) return;
     const actorId = await this.executorFromAudit(guild, type, targetId);
-    if (actorId && (this.isOwner(actorId) || actorId === this.client.user?.id)) return;
-    const count = actorId ? this.destructive.record(`${guild.id}:${actorId}`) : 0;
-    if (!actorId || count === securityEnvironment.destructiveThreshold || (count >= securityEnvironment.destructiveThreshold && count % 5 === 0)) {
-      await this.alert(guild, `Ação administrativa: ${label}`, `Alvo: \`${targetId}\` • responsável: ${actorId ? `<@${actorId}>` : "não identificado"}.${actorId ? ` ${count} ação(ões) destrutiva(s) em 30 segundos.` : " Confira o Audit Log."}`, count >= securityEnvironment.destructiveThreshold);
+    if (actorId && this.exemptActor(guild, actorId)) return;
+    if (!actorId) {
+      if (!this.isCooling("unknown:" + guild.id + ":" + type, 30000)) await this.alert(guild, "Ação sem autoria confirmada", label + " • alvo " + targetId + " • nenhuma punição automática.");
+      return;
     }
-    if (actorId && count >= securityEnvironment.destructiveThreshold && this.canAutomate() && !this.contained.has(`${guild.id}:${actorId}`)) {
-      this.contained.add(`${guild.id}:${actorId}`);
-      await this.contain(guild, actorId, `${count} ações destrutivas em 30s`);
-      await this.maybeAutoRestore(guild);
+    const count = this.destructive.record(guild.id + ":" + actorId);
+    const trusted = this.isTrustedAdmin(actorId);
+    const policy = massActionDecision(count, securityEnvironment.destructiveThreshold, trusted, this.canAutomate());
+    if (policy.alert && (count === securityEnvironment.destructiveThreshold || count === policy.effectiveThreshold || count % 5 === 0)) {
+      await this.alert(guild, "Ações destrutivas em sequência", "Responsável: <@" + actorId + "> • " + count + " ações em 30s • limite de contenção: " + policy.effectiveThreshold + (trusted ? " (equipe confiável)" : "") + ".", true);
     }
+    if (policy.contain && await this.contain(guild, actorId, count + " ações destrutivas em 30s")) await this.maybeAutoRestore(guild);
   }
 
   async creationAction(guild: Guild, type: AuditLogEvent, targetId: string, label: string, remove?: () => Promise<unknown>): Promise<void> {
     if (!this.isActive(guild.id) || !securityEnvironment.antiCopy) return;
     const actorId = await this.executorFromAudit(guild, type, targetId);
-    if (actorId && (this.isOwner(actorId) || actorId === this.client.user?.id)) return;
-    const count = actorId ? this.creations.record(`${guild.id}:${actorId}`) : 0;
-    if (!actorId || count === securityEnvironment.creationThreshold) {
-      await this.alert(guild, `Anti-cópia: ${label}`, `Alvo: \`${targetId}\` • responsável: ${actorId ? `<@${actorId}>` : "não identificado"}.${actorId ? ` ${count} criação(ões) em 30 segundos.` : ""}`, count >= securityEnvironment.creationThreshold);
+    if (actorId && this.exemptActor(guild, actorId)) return;
+    if (!actorId) {
+      if (!this.isCooling("unknown:" + guild.id + ":" + type, 30000)) await this.alert(guild, "Criação sem autoria confirmada", label + " • alvo " + targetId + " • nenhuma punição automática.");
+      return;
     }
-    if (actorId && count >= securityEnvironment.creationThreshold && this.canAutomate()) {
-      await this.contain(guild, actorId, "criação em massa / possível clone");
-      if (securityEnvironment.blockMassCreation && remove) await remove().catch(() => undefined);
+    const count = this.creations.record(guild.id + ":" + actorId);
+    const trusted = this.isTrustedAdmin(actorId);
+    const policy = massActionDecision(count, securityEnvironment.creationThreshold, trusted, this.canAutomate());
+    if (policy.alert && (count === securityEnvironment.creationThreshold || count === policy.effectiveThreshold)) {
+      await this.alert(guild, "Criações em sequência", "Responsável: <@" + actorId + "> • " + count + " criações em 30s • limite de contenção: " + policy.effectiveThreshold + (trusted ? " (equipe confiável)" : "") + ".", true);
+    }
+    if (policy.contain && await this.contain(guild, actorId, "criação em massa / possível clone")) {
+      // Only remove the confirmed triggering creation, and never a trusted administrator's newly created object.
+      if (!trusted && securityEnvironment.blockMassCreation && remove) await remove().catch(() => undefined);
     }
   }
 
-  private async contain(guild: Guild, actorId: string, reason: string): Promise<void> {
-    const member = await guild.members.fetch(actorId).catch(() => null);
-    if (!member || member.id === guild.ownerId) {
-      await this.alert(guild, "Contenção manual necessária", `Não consigo conter <@${actorId}> automaticamente. Motivo detectado: ${reason}.`, true);
-      return;
-    }
-    const roles = member.roles.cache.filter((role) => !role.managed && role.editable && role.id !== guild.id && shouldQuarantineRoles(role.permissions.bitfield, CRITICAL_PERMISSIONS));
-    const removed: string[] = [];
-    for (const role of roles.values()) {
-      if (await member.roles.remove(role, `Shield: ${reason}`).then(() => true).catch(() => false)) removed.push(role.id);
-    }
-    if (member.moderatable) await member.timeout(60 * 60_000, `Shield: contenção (${reason})`).catch(() => undefined);
-    await this.alert(guild, "Conta administrativa contida", `Responsável: <@${actorId}> • motivo: **${reason}** • cargos perigosos removidos: ${removed.length ? removed.map((id) => `<@&${id}>`).join(", ") : "nenhum removível"}.`, true);
+  private async contain(guild: Guild, actorId: string, reason: string): Promise<boolean> {
+    if (!this.isActive(guild.id) || !this.canAutomate() || this.exemptActor(guild, actorId)) return false;
+    const key = guild.id + ":" + actorId;
+    if (this.containmentInFlight.has(key) || this.isCooling("contain:" + key, 60000)) return false;
+    this.containmentInFlight.add(key);
+    try {
+      const member = await guild.members.fetch({user:actorId,force:true}).catch(() => null);
+      if (!member || !member.manageable || this.exemptActor(guild, actorId) || !this.canAutomate() || !this.isActive(guild.id)) {
+        await this.alert(guild, "Contenção manual necessária", "Não consegui conter <@" + actorId + ">. Motivo: " + reason + ".", true);
+        return false;
+      }
+      const roles = member.roles.cache.filter((role) => !role.managed && role.editable && role.id !== guild.id && shouldQuarantineRoles(role.permissions.bitfield, CRITICAL_PERMISSIONS));
+      const removed: string[] = [];
+      for (const role of roles.values()) {
+        if (!this.canAutomate() || !this.isActive(guild.id)) break;
+        if (await member.roles.remove(role, "Shield: " + reason).then(() => true).catch(() => false)) removed.push(role.name + " (" + role.id + ")");
+      }
+      const timeoutApplied = this.canAutomate() && this.isActive(guild.id) && member.moderatable && await member.timeout(60 * 60_000, "Shield: contenção (" + reason + ")").then(() => true).catch(() => false);
+      const success = removed.length > 0 || timeoutApplied;
+      await this.alert(guild, success ? "Contenção aplicada" : "Contenção não aplicada", "Responsável: @" + member.user.username + " (" + actorId + ") • motivo: " + reason + "\nCargos removidos: " + (removed.join(", ") || "nenhum") + "\nTimeout: " + (timeoutApplied ? "aplicado" : "não aplicado") + ".", true);
+      return success;
+    } finally { this.containmentInFlight.delete(key); }
   }
 
   async memberRemove(member: GuildMember | PartialGuildMember): Promise<void> {
     if (!this.isActive(member.guild.id) || member.user?.bot) return;
     const actorId = await this.executorFromAudit(member.guild, AuditLogEvent.MemberKick, member.id);
-    if (!actorId) return; // Saída voluntária: não é incidente.
-    if (this.isOwner(actorId) || actorId === this.client.user?.id) return;
-    const count = this.destructive.record(`${member.guild.id}:${actorId}`);
-    await this.alert(member.guild, "Expulsão de membro", `Membro: <@${member.id}> • executor: <@${actorId}> • ${count} expulsão(ões)/ações destrutivas recentes.`, count >= securityEnvironment.destructiveThreshold);
-    if (count >= securityEnvironment.destructiveThreshold && this.canAutomate()) await this.contain(member.guild, actorId, "expulsões em massa");
+    if (!actorId || this.exemptActor(member.guild, actorId)) return;
+    const count = this.destructive.record(member.guild.id + ":" + actorId);
+    const policy = massActionDecision(count, securityEnvironment.destructiveThreshold, this.isTrustedAdmin(actorId), this.canAutomate());
+    if (policy.alert && (count === securityEnvironment.destructiveThreshold || count === policy.effectiveThreshold)) await this.alert(member.guild, "Expulsões em sequência", "Executor: <@" + actorId + "> • " + count + " ações recentes • limite de contenção: " + policy.effectiveThreshold + ".", true);
+    if (policy.contain) await this.contain(member.guild, actorId, "expulsões em massa");
   }
 
   async memberUpdate(oldMember: GuildMember | PartialGuildMember, newMember: GuildMember): Promise<void> {
@@ -1111,8 +1162,8 @@ export class GeraisShield {
     }
     const newlyPrivileged = newMember.roles.cache.filter((role) => !oldMember.roles.cache.has(role.id) && shouldQuarantineRoles(role.permissions.bitfield, CRITICAL_PERMISSIONS));
     if (!newlyPrivileged.size) return;
-    const actorId = await this.executorFromAudit(newMember.guild, AuditLogEvent.MemberRoleUpdate, newMember.id);
-    if (actorId && this.isOwner(actorId)) return;
+    const actorId = await this.executorFromAudit(newMember.guild, AuditLogEvent.MemberRoleUpdate, newMember.id, (entry) => auditRoleAdditionMatches(entry, [...newlyPrivileged.keys()]));
+    if (actorId && this.exemptActor(newMember.guild, actorId)) return;
     await this.alert(newMember.guild, "Atribuição de cargo privilegiado", `Membro: <@${newMember.id}> • cargos: ${newlyPrivileged.map((r) => `<@&${r.id}>`).join(", ")} • executor: ${actorId ? `<@${actorId}>` : "não confirmado"}.`, true);
     if (!this.canAutomate() || !actorId || actorId === this.client.user?.id || this.isTrustedAdmin(actorId)) return;
     for (const role of newlyPrivileged.values()) {
@@ -1123,7 +1174,7 @@ export class GeraisShield {
   async inviteCreate(invite: Invite): Promise<void> {
     if (!invite.guild || !this.isActive(invite.guild.id)) return;
     const guild = this.client.guilds.cache.get(invite.guild.id);
-    if (!guild || !invite.inviterId || this.isOwner(invite.inviterId) || invite.inviterId === this.client.user?.id) return;
+    if (!guild || !invite.inviterId || this.exemptActor(guild, invite.inviterId)) return;
     await this.alert(guild, "Novo convite criado", `Criado por <@${invite.inviterId}> no canal ${invite.channelId ? `<#${invite.channelId}>` : "desconhecido"}.`);
     if (securityEnvironment.blockUnauthorizedInvites && this.canAutomate() && !this.isTrustedAdmin(invite.inviterId)) await invite.delete("Shield: convite não autorizado").catch(() => undefined);
   }
@@ -1133,11 +1184,12 @@ export class GeraisShield {
     const dangerous = isPrivilegedPermissionChange(oldRole.permissions.bitfield, newRole.permissions.bitfield, CRITICAL_PERMISSIONS);
     const everyoneChanged = newRole.id === newRole.guild.id && oldRole.permissions.bitfield !== newRole.permissions.bitfield;
     if (!dangerous && !everyoneChanged) return;
-    const actorId = await this.executorFromAudit(newRole.guild, AuditLogEvent.RoleUpdate, newRole.id);
-    if (actorId && this.isOwner(actorId)) return;
+    const actorId = await this.executorFromAudit(newRole.guild, AuditLogEvent.RoleUpdate, newRole.id, (entry) => auditValueMatches(entry, "permissions", oldRole.permissions.bitfield.toString(), newRole.permissions.bitfield.toString()));
+    if (actorId && this.exemptActor(newRole.guild, actorId)) return;
     await this.alert(newRole.guild, everyoneChanged ? "Permissões do @everyone alteradas" : "Elevação de permissões em cargo", `Cargo: <@&${newRole.id}> • responsável: ${actorId ? `<@${actorId}>` : "não confirmado"}.`, true);
     if (this.canAutomate() && actorId && actorId !== this.client.user?.id && !this.isTrustedAdmin(actorId)) {
-      await newRole.setPermissions(oldRole.permissions, "Shield: alteração privilegiada não autorizada").catch(() => undefined);
+      const latest = await newRole.guild.roles.fetch(newRole.id, {force:true}).catch(() => null);
+      if (latest && latest.permissions.bitfield === newRole.permissions.bitfield && this.canAutomate()) await latest.setPermissions(oldRole.permissions, "Shield: alteração privilegiada não autorizada").catch(() => undefined);
     }
   }
 
@@ -1145,10 +1197,16 @@ export class GeraisShield {
     if (!this.isActive(newGuild.id)) return;
     const changed = oldGuild.name !== newGuild.name || oldGuild.icon !== newGuild.icon || oldGuild.verificationLevel !== newGuild.verificationLevel;
     if (!changed) return;
-    const actorId = await this.executorFromAudit(newGuild, AuditLogEvent.GuildUpdate, newGuild.id);
-    if (actorId && this.isOwner(actorId)) return;
+    const actorId = await this.executorFromAudit(newGuild, AuditLogEvent.GuildUpdate, newGuild.id, (entry) =>
+      (oldGuild.name === newGuild.name || auditValueMatches(entry,"name",oldGuild.name,newGuild.name)) &&
+      (oldGuild.icon === newGuild.icon || auditValueMatches(entry,"icon_hash",String(oldGuild.icon),String(newGuild.icon))) &&
+      (oldGuild.verificationLevel === newGuild.verificationLevel || auditValueMatches(entry,"verification_level",String(oldGuild.verificationLevel),String(newGuild.verificationLevel)))
+    );
+    if (actorId && this.exemptActor(newGuild, actorId)) return;
     await this.alert(newGuild, "Configuração principal do servidor alterada", `Responsável: ${actorId ? `<@${actorId}>` : "não confirmado"}. Nome/ícone/verificação foram modificados.`, true);
     if (!this.canAutomate() || !actorId || actorId === this.client.user?.id || this.isTrustedAdmin(actorId)) return;
+    const latest = await newGuild.fetch().catch(() => null);
+    if (!latest || latest.name !== newGuild.name || latest.icon !== newGuild.icon || latest.verificationLevel !== newGuild.verificationLevel || !this.canAutomate()) return;
     if (oldGuild.name !== newGuild.name) await newGuild.setName(oldGuild.name, "Shield: reversão de nome").catch(() => undefined);
     if (oldGuild.verificationLevel !== newGuild.verificationLevel) await newGuild.setVerificationLevel(oldGuild.verificationLevel, "Shield: reversão de verificação").catch(() => undefined);
     if (oldGuild.icon !== newGuild.icon) {
@@ -1163,36 +1221,14 @@ export class GeraisShield {
     }
   }
 
-  async webhookUpdate(channel: TextChannel): Promise<void> {
-    if (!this.isActive(channel.guild.id) || this.isCooling(`webhook:${channel.id}`, 5000)) return;
-    let recent: { type: AuditLogEvent; actorId: string | null; targetId: string | null } | null = null;
-    for (const type of [AuditLogEvent.WebhookCreate, AuditLogEvent.WebhookUpdate, AuditLogEvent.WebhookDelete]) {
-      try {
-        const logs = await channel.guild.fetchAuditLogs({ type, limit: 5 });
-        const entry = logs.entries.find((item) => Date.now() - item.createdTimestamp <= 15_000);
-        if (entry) { recent = { type, actorId: entry.executorId ?? null, targetId: entry.targetId ?? null }; break; }
-      } catch { /* sem auditoria */ }
-    }
-    if (recent?.actorId && this.isOwner(recent.actorId)) return;
-    await this.alert(channel.guild, "Alteração em webhook", `Canal: <#${channel.id}> • executor: ${recent?.actorId ? `<@${recent.actorId}>` : "não identificado"} • tipo: ${recent?.type ?? "desconhecido"}.`, true);
-    if (this.canAutomate() && recent?.type === AuditLogEvent.WebhookCreate && recent.targetId && recent.actorId && !this.isTrustedAdmin(recent.actorId)) {
-      const hooks = await channel.fetchWebhooks().catch(() => null);
-      const hook = hooks?.get(recent.targetId);
-      if (hook) await hook.delete("Shield: webhook não autorizado").catch(() => undefined);
-    }
-  }
-
-  async integrationsUpdate(guild: Guild): Promise<void> {
-    if (!this.isActive(guild.id) || this.isCooling(`integration:${guild.id}`, 10_000)) return;
-    let actorId: string | null = null;
-    for (const type of [AuditLogEvent.IntegrationCreate, AuditLogEvent.IntegrationUpdate, AuditLogEvent.IntegrationDelete]) {
-      try {
-        const logs = await guild.fetchAuditLogs({ type, limit: 5 });
-        const entry = logs.entries.find((item) => Date.now() - item.createdTimestamp <= 15_000);
-        if (entry) { actorId = entry.executorId ?? null; break; }
-      } catch { /* ignore */ }
-    }
-    if (actorId && this.isOwner(actorId)) return;
-    await this.alert(guild, "Integração do servidor alterada", `Executor: ${actorId ? `<@${actorId}>` : "não identificado"}. Revise Apps, integrações e bots autorizados.`, true);
+  async auditWebhook(guild: Guild, entry: import("discord.js").GuildAuditLogsEntry): Promise<void> {
+    if (!this.isActive(guild.id) || entry.action !== AuditLogEvent.WebhookCreate || !entry.targetId || !entry.executorId) return;
+    if (this.exemptActor(guild, entry.executorId) || this.isTrustedAdmin(entry.executorId)) return;
+    if (Math.abs(Date.now() - entry.createdTimestamp) > 10000 || !this.auditClaims.claim(guild.id + ":" + entry.id)) return;
+    await this.alert(guild, "Webhook não autorizado criado", "Responsável: <@" + entry.executorId + "> • webhook " + entry.targetId + ".", true);
+    if (!this.canAutomate()) return;
+    const hooks = await guild.fetchWebhooks().catch(() => null);
+    const hook = hooks?.get(entry.targetId);
+    if (hook && this.canAutomate() && this.isActive(guild.id)) await hook.delete("Shield: webhook não autorizado confirmado pela auditoria").catch(() => undefined);
   }
 }

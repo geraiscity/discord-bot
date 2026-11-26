@@ -22,6 +22,7 @@ export type SecurityPanelState = {
   incidentCount: number;
   allowedBotCount: number;
   trustedAdminCount: number;
+  auditStats?: {confirmed:number;unconfirmed:number;replayed:number};
 };
 
 function navigation(active: AdminSection): ActionRowBuilder<ButtonBuilder>[] {

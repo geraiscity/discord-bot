@@ -45,6 +45,7 @@ export async function buildDiagnosticsEmbed(client: Client, guild: Guild, state?
       { name: "Permissões do bot", value: missing.length ? missing.join(", ") : "Nenhuma falta detectada", inline: false },
       { name: "Hierarquia", value: aboveBot === null ? "Não foi possível consultar o cargo do bot." : aboveBot + " cargo(s) não gerenciável(is) por posição. Se precisar gerenciá-los, ajuste a hierarquia.", inline: false },
       { name: "Canal de alertas", value: logOk ? "Privado para @everyone e permissões do bot detectadas" : "Confira o canal privado e as permissões Ver Canal, Enviar Mensagens e Incorporar Links. Cache pode estar incompleto.", inline: false },
+      { name: "Confiança da autoria", value: state?.auditStats ? state.auditStats.confirmed + " confirmadas • " + state.auditStats.unconfirmed + " inconclusivas • " + state.auditStats.replayed + " repetidas ignoradas (desde inicialização)" : "Aguardando dados", inline: false },
       { name: "Auditoria Discord", value: audit.sent + " entregues • " + audit.failed + " falhas desde a inicialização. Sem envio ao PV. Confira os canais privados configurados em caso de falhas.", inline: false },
       { name: "Roblox Bridge", value: robloxBridgeConfigured() ? (bridge.lastEventAt ? "Último evento <t:" + Math.floor(bridge.lastEventAt / 1000) + ":R>" : "Configurado; nenhum evento recebido desde a inicialização") : "Não configurado", inline: false },
       { name: "Backup automático", value: securityEnvironment.autoSnapshots ? "Configurado (não confirma execução)" : "Desativado", inline: true },
