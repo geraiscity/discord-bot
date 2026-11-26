@@ -134,7 +134,6 @@ export async function buildAdminPanel(
   securityState?: SecurityPanelState,
 ) {
   const bridge = getRobloxBridgeStats();
-  const tickets = ticketCounts(guild);
   const persistence = process.env.DATABASE_URL?.trim() ? "PostgreSQL configurado" : "Armazenamento local/fallback";
 
   if (section === "roblox") {
@@ -180,6 +179,7 @@ export async function buildAdminPanel(
   }
 
   if (section === "tickets") {
+    const tickets = ticketCounts(guild);
     const embed = new EmbedBuilder()
       .setColor(0xfee75c)
       .setAuthor({ name: "GERAIS CITY • CONTROL CENTER" })
@@ -225,6 +225,7 @@ export async function buildAdminPanel(
     return { embeds: [embed], components: [nav[0], ...securityRows(state), nav[1]] };
   }
 
+  const tickets = ticketCounts(guild);
   const embed = new EmbedBuilder()
     .setColor(0xFFD700)
     .setAuthor({ name: "GERAIS CITY • CONTROL CENTER" })
