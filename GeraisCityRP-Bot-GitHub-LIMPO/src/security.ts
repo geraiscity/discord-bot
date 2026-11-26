@@ -219,9 +219,11 @@ export class GeraisShield {
         ["Gerenciar Webhooks", PermissionFlagsBits.ManageWebhooks],
       ] as const;
       const missing = needed.filter(([, bit]) => !perms?.has(bit)).map(([name]) => name);
-      const snapshot = await loadGuildSnapshot(guild.id);
-      const verification = await loadVerificationConfig();
-      const storage = await persistenceMode();
+      const [snapshot, verification, storage] = await Promise.all([
+        loadGuildSnapshot(guild.id),
+        loadVerificationConfig(),
+        persistenceMode(),
+      ]);
       return {
         embeds: [new EmbedBuilder()
           .setColor(this.enabled ? (this.safeMode ? 0xfee75c : 0x57f287) : 0x747f8d)
@@ -399,8 +401,10 @@ export class GeraisShield {
       const channelId = params.channelId?.trim() ?? "";
       const roleId = params.roleId?.trim() ?? "";
       if (!validSnowflake(channelId) || !validSnowflake(roleId)) return { content: "Informe IDs válidos de canal e cargo." };
-      const channel = await guild.channels.fetch(channelId).catch(() => null);
-      const role = await guild.roles.fetch(roleId).catch(() => null);
+      const [channel, role] = await Promise.all([
+        guild.channels.fetch(channelId).catch(() => null),
+        guild.roles.fetch(roleId).catch(() => null),
+      ]);
       if (!channel || channel.type !== ChannelType.GuildText) return { content: "Escolha um canal de texto válido." };
       if (!role) return { content: "Não foi possível consultar o cargo." };
       if (isDangerousSelfRole(role)) return { content: "Por segurança, o cargo de verificação não pode possuir permissões administrativas/moderação." };
