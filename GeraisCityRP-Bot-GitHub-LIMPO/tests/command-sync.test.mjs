@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { syncBotCommands } from "../src/command-sync.ts";
+import { syncBotCommands } from "../src/commands/command-sync.ts";
 
 const current = [
   { name: "ticket", type: 1 },

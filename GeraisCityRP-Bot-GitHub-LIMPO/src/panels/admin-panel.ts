@@ -7,10 +7,10 @@ import {
   EmbedBuilder,
   type Guild,
 } from "discord.js";
-import { getRecentRobloxEvents, getRobloxBridgeStats, robloxBridgeConfigured } from "./roblox-bridge.js";
-import { parseTicketTopic } from "./ticket-meta.js";
-import { buildDiagnosticsEmbed } from "./diagnostics.js";
-import { resolveLogRoute } from "./log-routing.js";
+import { getRecentRobloxEvents, getRobloxBridgeStats, robloxBridgeConfigured } from "../roblox/bridge.js";
+import { parseTicketTopic } from "../tickets/ticket-meta.js";
+import { buildDiagnosticsEmbed } from "../diagnostics/diagnostics.js";
+import { resolveLogRoute } from "../audit/log-routing.js";
 
 export type AdminSection = "home" | "roblox" | "logs" | "tickets" | "security" | "diagnostics";
 

@@ -1,12 +1,12 @@
 import { ChannelType, EmbedBuilder, PermissionFlagsBits, type Client, type Guild } from "discord.js";
-import { interactionMetrics } from "./diagnostics-core.js";
-import { auditDeliveryStats } from "./discord-audit.js";
-import {archiveHealth} from "./audit-archive.js";
-import {auditQueue,bridgeQueue} from "./work-queue.js";
-import { probeDatabase } from "./persistence.js";
-import { getRobloxBridgeStats, robloxBridgeConfigured } from "./roblox-bridge.js";
-import { securityEnvironment } from "./security.js";
-import type { SecurityPanelState } from "./admin-panel.js";
+import { interactionMetrics } from "./interaction-metrics.js";
+import { auditDeliveryStats } from "../audit/discord-audit.js";
+import {archiveHealth} from "../audit/audit-archive.js";
+import {auditQueue,bridgeQueue} from "../performance/work-queue.js";
+import { probeDatabase } from "../database/persistence.js";
+import { getRobloxBridgeStats, robloxBridgeConfigured } from "../roblox/bridge.js";
+import { securityEnvironment } from "../security/shield.js";
+import type { SecurityPanelState } from "../panels/admin-panel.js";
 
 export async function buildDiagnosticsEmbed(client: Client, guild: Guild, state?: SecurityPanelState): Promise<EmbedBuilder> {
   const database = await probeDatabase();

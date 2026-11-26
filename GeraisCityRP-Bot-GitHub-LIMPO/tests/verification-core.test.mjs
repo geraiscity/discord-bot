@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { evaluateVerificationSignals } from "../src/verification-core.ts";
+import { evaluateVerificationSignals } from "../src/verification/verification-core.ts";
 
 const day = 86_400_000;
 const base = {

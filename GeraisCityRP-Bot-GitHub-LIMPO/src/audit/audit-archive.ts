@@ -1,6 +1,6 @@
 import { mkdir, appendFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { saveAuditArchive } from "./persistence.js";
+import { saveAuditArchive } from "../database/persistence.js";
 let failed=0;
 export function archiveHealth(){return {failed};}
 export async function archiveAudit(guildId:string,id:string,at:number,payload:unknown):Promise<void>{

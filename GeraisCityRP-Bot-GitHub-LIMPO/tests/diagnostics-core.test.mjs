@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { InteractionMetrics } from "../src/diagnostics-core.ts";
+import { InteractionMetrics } from "../src/diagnostics/interaction-metrics.ts";
 
 test("metrics use bounded recent samples and count exceptions since startup", () => {
   const metrics = new InteractionMetrics(3);

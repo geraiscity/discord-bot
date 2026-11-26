@@ -1,2 +1,2 @@
-import test from "node:test";import assert from "node:assert/strict";import {WorkQueue} from "../src/work-queue.ts";
+import test from "node:test";import assert from "node:assert/strict";import {WorkQueue} from "../src/performance/work-queue.ts";
 test("fila limita concorrência e capacidade",async()=>{const q=new WorkQueue(1,2);let release;const gate=new Promise(r=>release=r);assert.equal(q.submit(()=>gate),true);assert.equal(q.submit(async()=>{}),true);assert.equal(q.submit(async()=>{}),false);assert.equal(q.stats().waiting,1);release();await new Promise(r=>setImmediate(r));assert.equal(q.stats().active,0);assert.equal(q.stats().dropped,1);});

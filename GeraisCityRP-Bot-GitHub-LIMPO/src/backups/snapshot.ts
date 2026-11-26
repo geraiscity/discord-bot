@@ -7,7 +7,7 @@ import {
 } from "discord.js";
 import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { loadLatestSnapshotFromDatabase, saveSnapshotToDatabase,loadStateFromDatabase,saveStateToDatabase } from "./persistence.js";
+import { loadLatestSnapshotFromDatabase, saveSnapshotToDatabase,loadStateFromDatabase,saveStateToDatabase } from "../database/persistence.js";
 
 const SNAPSHOT_FILE = resolve(process.env.SECURITY_SNAPSHOT_FILE || ".data/gerais-snapshot.json");
 const HISTORY_DIR = resolve(process.env.SECURITY_SNAPSHOT_HISTORY_DIR || ".data/gerais-snapshots");

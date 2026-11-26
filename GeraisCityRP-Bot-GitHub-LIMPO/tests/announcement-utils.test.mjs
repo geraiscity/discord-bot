@@ -9,7 +9,7 @@ import {
   announcementMediaName,
   isAcceptedAnnouncementMedia,
   isAcceptedImage,
-} from "../src/announcement-utils.ts";
+} from "../src/communication/announcement-utils.ts";
 
 test("fotos protegidas recebem prefixo correto; fotos normais não", () => {
   assert.equal(announcementImageName("nova viatura.png", true), "SPOILER_nova_viatura.png");

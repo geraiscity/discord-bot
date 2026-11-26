@@ -1,6 +1,6 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, ChannelSelectMenuBuilder, ChannelType, EmbedBuilder, type Guild } from "discord.js";
-import { effectiveLogRoute, logRouteKinds, type LogRouteKind } from "./audit-core.js";
-import { getLogRoutes } from "./log-routing.js";
+import { effectiveLogRoute, logRouteKinds, type LogRouteKind } from "../audit/audit-core.js";
+import { getLogRoutes } from "../audit/log-routing.js";
 export const routeLabels: Record<LogRouteKind,string> = {channel:"Canais",role:"Cargos",member:"Membros",server:"Servidor",general:"Auditoria geral",security:"Segurança"};
 export async function buildLogRoutingPanel(guild: Guild, legacy: string | null, notice?: string) {
   const routes = await getLogRoutes(guild.id);

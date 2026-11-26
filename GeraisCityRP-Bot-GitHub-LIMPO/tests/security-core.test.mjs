@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { detectSensitiveContent, SlidingCounter, isProtectedChannel, isPrivilegedPermissionChange, shouldQuarantineRoles, scoreJoinRisk } from '../src/security-core.ts';
+import { detectSensitiveContent, SlidingCounter, isProtectedChannel, isPrivilegedPermissionChange, shouldQuarantineRoles, scoreJoinRisk } from '../src/security/risk-engine.ts';
 
 const base = { blockInvites: true, allowedInviteCodes: ['GeraisOficial'], protectedTerms: ['interior secreto'] };
 test('Bloqueia convites de terceiros, respeita lista permitida', () => {
@@ -41,7 +41,7 @@ test('Risk Score sobe para contas novas em pico e bots não autorizados', () => 
   assert.equal(bot.score, 10);
 });
 
-import { uniqueAuditEvidence, AuditClaims, auditRoleAdditionMatches, auditValueMatches, massActionDecision, shouldQuarantineJoin } from '../src/security-core.ts';
+import { uniqueAuditEvidence, AuditClaims, auditRoleAdditionMatches, auditValueMatches, massActionDecision, shouldQuarantineJoin } from '../src/security/risk-engine.ts';
 test('auditoria rejeita entradas antigas, ambíguas e sem executor', () => {
   const entry = {id:'a',targetId:'target',executorId:'actor',createdTimestamp:10000};
   assert.equal(uniqueAuditEvidence([entry],'target',10001),entry);

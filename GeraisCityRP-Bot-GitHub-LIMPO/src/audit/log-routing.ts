@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { resolve, dirname } from "node:path";
 import { ChannelType, PermissionFlagsBits, type Guild } from "discord.js";
-import { loadStateFromDatabase, saveStateToDatabase } from "./persistence.js";
+import { loadStateFromDatabase, saveStateToDatabase } from "../database/persistence.js";
 import { normalizeLogRoutes, effectiveLogRoute, type LogRouteKind, type LogRoutes } from "./audit-core.js";
 
 type SavedRoutes = { updatedAt: number; routes: LogRoutes };

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { auditDestination, roleChangeList, safeAuditText } from "../src/audit-core.ts";
+import { auditDestination, roleChangeList, safeAuditText } from "../src/audit/audit-core.ts";
 test("roteamento por categoria e sem fallback para PV", () => {
   assert.equal(auditDestination("role", {DISCORD_ROLE_LOG_CHANNEL_ID:"role", GERAIS_LOG_CHANNEL_ID:"general"}, "shield"), "role");
   assert.equal(auditDestination("member", {GERAIS_LOG_CHANNEL_ID:"general"}, "shield"), "general");
@@ -13,7 +13,7 @@ test("cargos exibem nome e ID sem gerar menções", () => {
   assert.equal(roleChangeList([]), "Não informado");
 });
 
-import { effectiveLogRoute, normalizeLogRoutes, isLogRouteKind } from "../src/audit-core.ts";
+import { effectiveLogRoute, normalizeLogRoutes, isLogRouteKind } from "../src/audit/audit-core.ts";
 test("painel substitui env por categoria sem alterar as demais", () => {
   const env = {DISCORD_ROLE_LOG_CHANNEL_ID:"env-role",GERAIS_LOG_CHANNEL_ID:"env-general"};
   assert.equal(effectiveLogRoute("role",{role:"panel-role",general:"panel-general"},env,"shield"),"panel-role");

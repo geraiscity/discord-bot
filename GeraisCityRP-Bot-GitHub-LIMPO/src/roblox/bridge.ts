@@ -8,9 +8,9 @@ import {
   type Guild,
   type TextChannel,
 } from "discord.js";
-import { recordRobloxEvent } from "./persistence.js";
-import {bridgeQueue} from "./work-queue.js";
-import {resolveLogRoute} from "./log-routing.js";
+import { recordRobloxEvent } from "../database/persistence.js";
+import {bridgeQueue} from "../performance/work-queue.js";
+import {resolveLogRoute} from "../audit/log-routing.js";
 
 export type RobloxLogSeverity = "info" | "warning" | "suspicious" | "critical";
 export type RobloxLogCategory =

@@ -13,8 +13,8 @@ import {
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { evaluateVerificationSignals } from "./verification-core.js";
-import { buildOauthAuthorizationUrl, oauthVerificationConfigured, type OAuthVerificationResult } from "./verification-oauth.js";
-import { loadStateFromDatabase, recordVerificationEvent, saveStateToDatabase } from "./persistence.js";
+import { buildOauthAuthorizationUrl, oauthVerificationConfigured, type OAuthVerificationResult } from "./oauth.js";
+import { loadStateFromDatabase, recordVerificationEvent, saveStateToDatabase } from "../database/persistence.js";
 
 const STATE_FILE = resolve(process.env.VERIFICATION_STATE_FILE || ".data/gerais-verification.json");
 const DATABASE_STATE_KEY = `verification:${process.env.SECURITY_GUILD_ID?.trim() || process.env.DISCORD_GUILD_ID?.trim() || "default"}`;

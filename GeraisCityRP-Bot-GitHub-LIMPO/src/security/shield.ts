@@ -1,4 +1,4 @@
-import { cachedSecurityRoute, getLogRoutes, resolveLogRoute, saveLogRoute, validateLogChannel } from "./log-routing.js";
+import { cachedSecurityRoute, getLogRoutes, resolveLogRoute, saveLogRoute, validateLogChannel } from "../audit/log-routing.js";
 import {
   AuditLogEvent,
   ChannelType,
@@ -32,16 +32,16 @@ import {
   shouldQuarantineJoin,
   type AuditEvidence,
   type SecurityMode,
-} from "./security-core.js";
-import { parseTicketTopic } from "./ticket-meta.js";
-import { createGuildSnapshot, loadGuildSnapshot, previewGuildRestore, restoreGuildSnapshot, snapshotFilePath } from "./security-snapshot.js";
+} from "./risk-engine.js";
+import { parseTicketTopic } from "../tickets/ticket-meta.js";
+import { createGuildSnapshot, loadGuildSnapshot, previewGuildRestore, restoreGuildSnapshot, snapshotFilePath } from "../backups/snapshot.js";
 import {
   loadRecentSecurityIncidents,
   loadStateFromDatabase,
   persistSecurityIncident,
   persistenceMode,
   saveStateToDatabase,
-} from "./persistence.js";
+} from "../database/persistence.js";
 import {
   buildVerificationPanelEmbed,
   exactEmailVerificationEnabled,
@@ -51,7 +51,7 @@ import {
   verificationButtonRow,
   verificationEnvironment,
   verificationStateFile,
-} from "./verification.js";
+} from "../verification/verification.js";
 
 const CRITICAL_PERMISSIONS =
   PermissionFlagsBits.Administrator |
