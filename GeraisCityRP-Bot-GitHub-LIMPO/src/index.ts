@@ -129,6 +129,7 @@ const shield = new GeraisShield(client);
 
 // Evita criar dois canais quando a mesma pessoa aperta o botão várias vezes.
 const openingTickets = new Set<string>();
+const closingTickets = new Set<string>();
 
 
 type PendingAnnouncement = {
@@ -494,10 +495,17 @@ async function buildTicketTranscript(channel: TextChannel, maxMessages = 500): P
   let before: string | undefined;
   while (messages.length < maxMessages) {
     const page = await channel.messages.fetch({ limit: Math.min(100, maxMessages - messages.length), before }).catch(() => null);
-    if (!page?.size) break;
+    if (!page) throw new Error("Não consegui ler todo o histórico do ticket. Confira a permissão Ler Histórico de Mensagens. O ticket foi preservado.");
+    if (!page.size) break;
     messages.push(...page.values());
     before = page.last()?.id;
     if (page.size < 100) break;
+  }
+  if (messages.length >= maxMessages && before) {
+    const older = await channel.messages.fetch({ limit: 1, before }).catch(() => null);
+    if (!older || older.size > 0) {
+      throw new Error("O histórico excede o limite de exportação ou não pôde ser verificado. O ticket permanecerá aberto para evitar perda de mensagens.");
+    }
   }
   messages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
   const lines = [
@@ -548,6 +556,11 @@ async function sendTicketLog(
 
   if (log?.type !== ChannelType.GuildText && log?.type !== ChannelType.GuildAnnouncement) {
     console.error(`[TICKETS] O canal de logs da categoria ${type} não existe ou não é um canal de texto/anúncios: ${id}.`);
+    return false;
+  }
+
+  if (log.permissionsFor(guild.roles.everyone)?.has(PermissionFlagsBits.ViewChannel) !== false) {
+    console.warn("[TICKETS] Canal de transcript não é comprovadamente privado para @everyone.");
     return false;
   }
 
@@ -644,7 +657,9 @@ async function closeTicket(channel: TextChannel, actorId: string): Promise<void>
     allowedMentions: { parse: [] },
   });
 
-
+  if (!logged) {
+    throw new Error("Não consegui salvar o transcript em um canal privado. Confira o canal de logs da categoria e as permissões do bot. O ticket foi preservado.");
+  }
 
   const ticketOwner = await client.users.fetch(meta.ownerId).catch(() => null);
   if (ticketOwner) {
@@ -661,7 +676,12 @@ async function closeTicket(channel: TextChannel, actorId: string): Promise<void>
   }
 
   await channel.send({ embeds: [new EmbedBuilder().setColor(0xed4245).setTitle("🔒 Atendimento encerrado").setDescription(`Fechado por <@${actorId}>. ${logged ? "O transcript foi salvo no canal de logs da categoria." : "Não consegui entregar o transcript ao canal de logs desta categoria; confira o ID e as permissões do canal."}\nEste canal será removido em alguns segundos.`)] }).catch(() => undefined);
-  setTimeout(() => { void channel.delete(`Ticket Final encerrado por ${actorId}`).catch(() => undefined); }, 3000).unref();
+  await new Promise<void>((resolve) => setTimeout(resolve, 3000));
+  try {
+    await channel.delete(`Ticket Final encerrado por ${actorId}`);
+  } catch {
+    throw new Error("Transcript salvo, mas não consegui excluir o canal. Confira a permissão Gerenciar Canais.");
+  }
 }
 
 function memberModal(action: "add" | "remove"): ModalBuilder {
@@ -1614,11 +1634,18 @@ async function handleInteraction(interaction: Interaction) {
       await interaction.editReply("Este botão só funciona dentro de um ticket.");
       return;
     }
+    if (closingTickets.has(channel.id)) {
+      await interaction.editReply("Este ticket já está sendo encerrado.");
+      return;
+    }
+    closingTickets.add(channel.id);
     try {
       await interaction.editReply("Fechando o ticket e gerando o transcript...");
       await closeTicket(channel, interaction.user.id);
     } catch (error) {
-      await interaction.editReply(error instanceof Error ? error.message : "Não foi possível fechar o ticket.");
+      await interaction.editReply(error instanceof Error ? error.message : "Não foi possível fechar o ticket. O canal foi preservado.").catch(() => undefined);
+    } finally {
+      closingTickets.delete(channel.id);
     }
     return;
   }
