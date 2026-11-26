@@ -93,7 +93,7 @@ function ticketCounts(guild: Guild): { open: number; claimed: number; purchases:
 export function buildAdminSecurityConfigPanel(guild: Guild, state: SecurityPanelState) {
   const embed = new EmbedBuilder()
     .setColor(0x2b2d31)
-    .setAuthor({ name: "GERAIS CITY • SECURITY CENTER" })
+    .setAuthor({ name: "CENTRAL DE SEGURANÇA" })
     .setTitle("⚙️ Configurações do Shield")
     .setDescription("As configurações que antes ficavam espalhadas em `/seguranca` agora ficam aqui dentro do Painel Admin.")
     .addFields(
@@ -146,7 +146,7 @@ export async function buildAdminPanel(
   if (section === "roblox") {
     const embed = new EmbedBuilder()
       .setColor(0x3498db)
-      .setAuthor({ name: "GERAIS CITY • CONTROL CENTER" })
+      .setAuthor({ name: "CENTRAL ADMINISTRATIVA" })
       .setTitle("🎮 Roblox Bridge")
       .setDescription("Visão operacional da comunicação Roblox → Gerais Bot.")
       .addFields(
@@ -174,7 +174,7 @@ export async function buildAdminPanel(
       : "Nenhum evento Roblox recebido desde que o bot ligou.";
     const embed = new EmbedBuilder()
       .setColor(0x5865f2)
-      .setAuthor({ name: "GERAIS CITY • LOG CENTER" })
+      .setAuthor({ name: "CENTRAL DE LOGS" })
       .setTitle("📋 Eventos recentes")
       .setDescription(lines.slice(0, 3900))
       .addFields(
@@ -190,7 +190,7 @@ export async function buildAdminPanel(
     const tickets = ticketCounts(guild);
     const embed = new EmbedBuilder()
       .setColor(0xfee75c)
-      .setAuthor({ name: "GERAIS CITY • CONTROL CENTER" })
+      .setAuthor({ name: "CENTRAL ADMINISTRATIVA" })
       .setTitle("🎫 Tickets")
       .addFields(
         { name: "Abertos", value: String(tickets.open), inline: true },
@@ -215,8 +215,8 @@ export async function buildAdminPanel(
     };
     const embed = new EmbedBuilder()
       .setColor(state.enabled ? (state.safeMode ? 0xfee75c : 0x57f287) : 0x747f8d)
-      .setAuthor({ name: "GERAIS CITY • SECURITY CENTER" })
-      .setTitle("🛡️ Gerais Shield")
+      .setAuthor({ name: "CENTRAL DE SEGURANÇA" })
+      .setTitle("🛡️ Shield")
       .setDescription("Todos os controles principais de segurança ficam aqui. O slash command `/seguranca` foi removido para deixar a lista de comandos limpa.")
       .addFields(
         { name: "Estado", value: state.enabled ? "🟢 Ativo" : "🔴 Desativado", inline: true },
@@ -236,7 +236,7 @@ export async function buildAdminPanel(
   const tickets = ticketCounts(guild);
   const embed = new EmbedBuilder()
     .setColor(0xFFD700)
-    .setAuthor({ name: "GERAIS CITY • CONTROL CENTER" })
+    .setAuthor({ name: "CENTRAL ADMINISTRATIVA" })
     .setTitle("⚙️ Painel Administrativo")
     .setDescription("Central privada do Discord + Roblox. Use os botões abaixo para navegar sem criar dezenas de comandos e canais.")
     .addFields(
@@ -247,7 +247,7 @@ export async function buildAdminPanel(
       { name: "Tickets abertos", value: String(tickets.open), inline: true },
       { name: "Alertas Roblox", value: String(bridge.securityAlerts + bridge.economyAlerts), inline: true },
     )
-    .setFooter({ text: "Gerais City RP • Administração integrada" })
+    .setFooter({ text: "Administração integrada" })
     .setTimestamp();
   return { embeds: [embed], components: navigation("home") };
 }

@@ -92,7 +92,7 @@ export async function deliverDiscordAudit(entry: GuildAuditLogsEntry, guild: Gui
     details.push("**" + label + "**\nAntes: " + valueFor(change.key, change.old, guild) + "\nDepois: " + valueFor(change.key, change.new, guild));
   }
   if (details.length) embed.setDescription(details.join("\n\n").slice(0, 3500));
-  embed.setFooter({text:"Gerais City • Auditoria Discord • " + entry.id}).setTimestamp(entry.createdTimestamp);
+  embed.setFooter({text:"Auditoria Discord • " + entry.id}).setTimestamp(entry.createdTimestamp);
   try { await channel.send({embeds:[embed],allowedMentions:{parse:[]}}); delivery.sent++; }
   catch { delivery.failed++; }
 }

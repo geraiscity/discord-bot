@@ -147,7 +147,7 @@ export function mediaPromoCopy(kind: MediaPromoKind, creatorName: string | null)
       title: "🔴 LIVE NO AR!",
       description: `${opening}\n\nA transmissão já começou! Chega mais para acompanhar cada momento, trocar aquela resenha e fortalecer nosso criador de conteúdo. ❤️\n\n**Não fica de fora dessa!** É só clicar no botão abaixo e aproveitar. 👇`,
       buttonLabel: "▶ Assistir à live",
-      footer: "Gerais City RP • Transmissão ao vivo",
+      footer: "Transmissão ao vivo",
     };
   }
 
@@ -158,6 +158,6 @@ export function mediaPromoCopy(kind: MediaPromoKind, creatorName: string | null)
     title: "🎬 VÍDEO NOVO NO AR!",
     description: `${opening}\n\nConteúdo fresquinho para você conferir! Dá o play, deixa seu like e fortalece o canal. Cada apoio faz a diferença! ❤️\n\n**Bora assistir?** O vídeo está a um clique de distância. 👇`,
     buttonLabel: "▶ Assistir ao vídeo",
-    footer: "Gerais City RP • Conteúdo novo",
+    footer: "Conteúdo novo",
   };
 }

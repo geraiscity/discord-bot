@@ -36,12 +36,12 @@ export async function buildDiagnosticsEmbed(client: Client, guild: Guild, state?
   const issue = missing.length > 0 || !logOk || !ownerConfigured || !target || database === "unavailable" || database === "timeout" || !client.isReady();
   return new EmbedBuilder()
     .setColor(issue ? 0xfee75c : 0x57f287)
-    .setTitle("🩺 Gerais Diagnostics")
+    .setTitle("🩺 Diagnóstico do bot")
     .setDescription("Diagnóstico somente leitura. Nenhuma configuração ou permissão foi alterada.")
     .addFields(
       { name: "Discord", value: client.isReady() ? "Conectado • " + client.ws.ping + " ms Gateway" : "Desconectado", inline: true },
       { name: "Banco de dados", value: databaseText, inline: true },
-      { name: "Gerais Shield", value: shieldText, inline: true },
+      { name: "Shield", value: shieldText, inline: true },
       { name: "Permissões do bot", value: missing.length ? missing.join(", ") : "Nenhuma falta detectada", inline: false },
       { name: "Hierarquia", value: aboveBot === null ? "Não foi possível consultar o cargo do bot." : aboveBot + " cargo(s) não gerenciável(is) por posição. Se precisar gerenciá-los, ajuste a hierarquia.", inline: false },
       { name: "Canal de alertas", value: logOk ? "Privado para @everyone e permissões do bot detectadas" : "Confira o canal privado e as permissões Ver Canal, Enviar Mensagens e Incorporar Links. Cache pode estar incompleto.", inline: false },

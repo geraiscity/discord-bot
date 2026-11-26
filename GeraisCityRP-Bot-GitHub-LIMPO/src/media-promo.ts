@@ -6,7 +6,7 @@ export function buildMediaPromo(kind: MediaPromoKind, info: MediaPromoInfo) {
   const copy = mediaPromoCopy(kind, info.creatorName);
   const embed = new EmbedBuilder()
     .setColor(0xe53935)
-    .setAuthor({ name: "GERAIS CITY RP  •  DIVULGAÇÕES" })
+    .setAuthor({ name: "DIVULGAÇÕES" })
     .setTitle(copy.title)
     .setURL(info.url)
     .setDescription(copy.description)

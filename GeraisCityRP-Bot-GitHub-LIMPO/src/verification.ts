@@ -98,7 +98,7 @@ export async function saveVerificationConfig(config: VerificationConfig | null):
 export function buildVerificationPanelEmbed(role: Role): EmbedBuilder {
   return new EmbedBuilder()
     .setColor(0x57f287)
-    .setAuthor({ name: "GERAIS CITY RP  •  VERIFICAÇÃO" })
+    .setAuthor({ name: "VERIFICAÇÃO DE MEMBROS" })
     .setTitle("✅ Verificação de acesso")
     .setDescription(
       "Para liberar o acesso ao servidor, confirme sua conta pelo botão abaixo.\n\n" +
@@ -115,7 +115,7 @@ export function buildVerificationPanelEmbed(role: Role): EmbedBuilder {
           : "") +
       `\nAo ser aprovado, você receberá automaticamente ${role}.`,
     )
-    .setFooter({ text: "Gerais City RP • Sistema automático de verificação" })
+    .setFooter({ text: "Sistema automático de verificação" })
     .setTimestamp();
 }
 
@@ -167,7 +167,7 @@ async function grantVerificationRole(member: GuildMember): Promise<{ ok: boolean
   const resolved = await verificationRoleForMember(member);
   if (!resolved.role) return { ok: false, role: null, message: resolved.error ?? "Cargo de verificação indisponível." };
   if (!member.roles.cache.has(resolved.role.id)) {
-    await member.roles.add(resolved.role, `Gerais City RP: verificação aprovada para ${member.id}`);
+    await member.roles.add(resolved.role, `Verificação: verificação aprovada para ${member.id}`);
   }
   return { ok: true, role: resolved.role, message: "Cargo de verificação liberado." };
 }
@@ -213,7 +213,7 @@ export async function handleVerificationButton(interaction: ButtonInteraction): 
           .setTitle("❌ Verificação não concluída")
           .setDescription(decision.reason)
           .addFields({ name: "Idade aproximada da conta", value: `${decision.accountAgeDays} dia(s)`, inline: true })
-          .setFooter({ text: "Gerais City RP • Verificação" }),
+          .setFooter({ text: "Verificação" }),
       ],
     });
     return;
@@ -252,7 +252,7 @@ export async function handleVerificationButton(interaction: ButtonInteraction): 
         .setTitle("✅ Verificação concluída!")
         .setDescription(`Tudo certo, ${interaction.user}. Sua conta atende aos requisitos automáticos e o cargo ${granted.role} foi liberado.`)
         .addFields({ name: "Idade aproximada da conta", value: `${decision.accountAgeDays} dia(s)`, inline: true })
-        .setFooter({ text: "Gerais City RP • Bem-vindo!" }),
+        .setFooter({ text: "Bem-vindo!" }),
     ],
   });
 }

@@ -201,7 +201,7 @@ export async function restoreGuildSnapshot(guild: Guild, snapshot: GuildSnapshot
       hoist: saved.hoist,
       permissions: BigInt(saved.permissions),
       mentionable: saved.mentionable,
-      reason: "Gerais Shield Final: restauração de snapshot",
+      reason: "Shield: restauração de snapshot",
     }).catch(() => null);
     if (!created) { skipped++; continue; }
     roleMap.set(saved.id, created.id);
@@ -225,7 +225,7 @@ export async function restoreGuildSnapshot(guild: Guild, snapshot: GuildSnapshot
       type: saved.type,
       parent,
       permissionOverwrites: overwrites,
-      reason: "Gerais Shield Final: restauração de snapshot",
+      reason: "Shield: restauração de snapshot",
     };
     if ([ChannelType.GuildText, ChannelType.GuildAnnouncement].includes(saved.type as ChannelType)) {
       options.topic = saved.topic ?? undefined;
@@ -243,7 +243,7 @@ export async function restoreGuildSnapshot(guild: Guild, snapshot: GuildSnapshot
 
   const everyone = guild.roles.everyone;
   if (everyone.permissions.has(PermissionFlagsBits.Administrator)) {
-    await everyone.setPermissions(everyone.permissions.remove(PermissionFlagsBits.Administrator), "Gerais Shield Final: proteção do @everyone").catch(() => undefined);
+    await everyone.setPermissions(everyone.permissions.remove(PermissionFlagsBits.Administrator), "Shield: proteção do @everyone").catch(() => undefined);
   }
 
   return { rolesCreated, channelsCreated, skipped };

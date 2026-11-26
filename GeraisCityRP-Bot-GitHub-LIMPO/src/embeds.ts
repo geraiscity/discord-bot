@@ -9,7 +9,7 @@ export function buildTicketPanelEmbed(options: {
   thumbnail?: string | null;
 }): EmbedBuilder {
   const embed = new EmbedBuilder()
-    .setAuthor({ name: "GERAIS CITY RP  •  CENTRAL DE ATENDIMENTO" })
+    .setAuthor({ name: "CENTRAL DE ATENDIMENTO" })
     .setTitle(options.title || config.defaults.panelTitle)
     .setDescription(
       `${options.description || config.defaults.panelDescription}
@@ -25,7 +25,7 @@ Nossa equipe irá assumir seu chamado assim que possível. Evite abrir mais de u
       { name: "🤝 Parcerias", value: "Propostas e oportunidades de parceria.", inline: true },
     )
     .setColor(options.color)
-    .setFooter({ text: "Gerais City RP • Atendimento oficial" });
+    .setFooter({ text: "Atendimento oficial" });
 
   if (options.footerImage || config.defaults.footerImage) {
     embed.setImage(options.footerImage || config.defaults.footerImage!);

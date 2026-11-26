@@ -225,7 +225,7 @@ function buildEventEmbed(event: RobloxBridgeEvent): EmbedBuilder {
   const playerName = event.player?.displayName || event.player?.username || "Não informado";
   const embed = new EmbedBuilder()
     .setColor(event.severity === "critical" ? 0xed4245 : event.severity === "suspicious" ? 0xf47b20 : CATEGORY_COLOR[event.category])
-    .setAuthor({ name: `GERAIS CITY • ${CATEGORY_LABEL[event.category]}` })
+    .setAuthor({ name: `${CATEGORY_LABEL[event.category]}` })
     .setTitle(`${event.severity === "critical" ? "🚨 " : event.severity === "suspicious" ? "⚠️ " : ""}${eventTitle(event)}`)
     .setFooter({ text: `Evento ${event.id} • ${event.severity.toUpperCase()}` })
     .setTimestamp(event.receivedAt);

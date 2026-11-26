@@ -26,6 +26,9 @@ import {
   TextInputBuilder,
   TextInputStyle,
   StringSelectMenuBuilder,
+  UserSelectMenuBuilder,
+  ChannelSelectMenuBuilder,
+  RoleSelectMenuBuilder,
   StringSelectMenuInteraction,
   PermissionFlagsBits,
   REST,
@@ -104,7 +107,7 @@ const ticketTypes: Array<{
     id: "compras",
     label: "Compras",
     emoji: "🛒",
-    description: "Atendimento para produtos e compras do Gerais City.",
+    description: "Atendimento para produtos e compras do servidor.",
   },
   {
     id: "parcerias",
@@ -513,7 +516,7 @@ async function buildTicketTranscript(channel: TextChannel, maxMessages = 500): P
   }
   messages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
   const lines = [
-    `Gerais City RP • Transcript de Ticket`,
+    `Transcript de Ticket`,
     `Canal: #${channel.name} (${channel.id})`,
     `Servidor: ${channel.guild.name} (${channel.guild.id})`,
     `Gerado em: ${new Date().toISOString()}`,
@@ -601,7 +604,7 @@ async function claimTicket(channel: TextChannel, userId: string): Promise<string
   await updateTicketTopic(channel, meta);
   void recordTicketEvent({ guildId: channel.guild.id, channelId: channel.id, ownerId: meta.ownerId, actorId: userId, action: "claim" });
   await channel.send({ embeds: [new EmbedBuilder().setColor(0x57f287).setTitle("👮 Atendimento assumido").setDescription(`<@${userId}> assumiu este ticket.`).setTimestamp()] });
-  void sendGeneralLog(channel.guild, { embeds: [new EmbedBuilder().setColor(0x57f287).setAuthor({ name: "GERAIS CITY • TICKET" }).setTitle("Ticket assumido").setDescription(`<#${channel.id}> foi assumido por <@${userId}>.`).setFooter({ text: `Canal ${channel.id}` }).setTimestamp()], allowedMentions: { parse: [] } });
+  void sendGeneralLog(channel.guild, { embeds: [new EmbedBuilder().setColor(0x57f287).setAuthor({ name: "CENTRAL DE ATENDIMENTO" }).setTitle("Ticket assumido").setDescription(`<#${channel.id}> foi assumido por <@${userId}>.`).setFooter({ text: `Canal ${channel.id}` }).setTimestamp()], allowedMentions: { parse: [] } });
   return "Ticket assumido com sucesso.";
 }
 
@@ -671,7 +674,7 @@ async function closeTicket(channel: TextChannel, actorId: string): Promise<void>
       embeds: [new EmbedBuilder()
         .setColor(0xed4245)
         .setTitle("🔒 Ticket encerrado")
-        .setDescription(`Seu ticket no Gerais City RP foi encerrado por <@${actorId}>.`)
+        .setDescription(`Seu ticket no servidor foi encerrado por <@${actorId}>.`)
         .setTimestamp()],
       allowedMentions: { users: [actorId] },
     }).catch((error) => {
@@ -820,7 +823,7 @@ async function createTicket(
   void sendGeneralLog(interaction.guild, {
     embeds: [new EmbedBuilder()
       .setColor(type === "compras" ? 0x57f287 : 0x5865f2)
-      .setAuthor({ name: "GERAIS CITY • TICKET" })
+      .setAuthor({ name: "CENTRAL DE ATENDIMENTO" })
       .setTitle("Ticket aberto")
       .addFields(
         { name: "Usuário", value: `<@${interaction.user.id}>`, inline: true },
@@ -835,7 +838,7 @@ async function createTicket(
     void sendPartnershipLog(interaction.guild, {
       embeds: [new EmbedBuilder()
         .setColor(0x5865f2)
-        .setAuthor({ name: "GERAIS CITY • PARCERIAS" })
+        .setAuthor({ name: "PARCERIAS" })
         .setTitle("🤝 Nova solicitação de parceria")
         .addFields(
           { name: "Solicitante", value: "<@" + interaction.user.id + ">", inline: true },
@@ -942,7 +945,7 @@ async function toggleRole(
         .setColor(0xfee75c)
         .setTitle("✨ Cargo atualizado")
         .setDescription(`O cargo ${role} foi **removido** do seu perfil com sucesso.`)
-        .setFooter({ text: "Gerais City RP • Cargos automáticos" })],
+        .setFooter({ text: "Cargos automáticos" })],
     });
   } else {
     await member.roles.add(role);
@@ -952,7 +955,7 @@ async function toggleRole(
         .setColor(0x57f287)
         .setTitle("✅ Cargo adicionado!")
         .setDescription(`O cargo ${role} foi adicionado ao seu perfil com sucesso.`)
-        .setFooter({ text: "Gerais City RP • Cargos automáticos" })],
+        .setFooter({ text: "Cargos automáticos" })],
     });
   }
 }
@@ -982,7 +985,7 @@ async function handleInteraction(interaction: Interaction) {
     if (shield.shouldRestrictCommand(interaction.commandName) && !shield.isOwner(interaction.user.id)) {
       await interaction.reply({
         content: securityEnvironment.ownerId
-          ? "⛔ Este comando é exclusivo do proprietário do Gerais City RP."
+          ? "⛔ Este comando é exclusivo do proprietário do servidor."
           : "Comandos administrativos bloqueados: configure SECURITY_OWNER_ID nos Secrets do Replit.",
         ephemeral: true,
       });
@@ -1153,14 +1156,14 @@ async function handleInteraction(interaction: Interaction) {
 
       const panelEmbed = new EmbedBuilder()
         .setColor(0x5865f2)
-        .setAuthor({ name: "GERAIS CITY RP  •  CARGOS" })
+        .setAuthor({ name: "CARGOS AUTOMÁTICOS" })
         .setTitle("🎭 Escolha seus cargos")
         .setDescription(
           "Personalize seu perfil escolhendo os cargos abaixo.\n\n" +
           "Clique em um botão para **adicionar** o cargo. Se clicar novamente, ele será **removido** automaticamente.\n\n" +
           "**Cargos disponíveis**\n" + roles.map((role) => `✨ ${role}`).join("\n"),
         )
-        .setFooter({ text: "Gerais City RP • Seus cargos, suas escolhas" })
+        .setFooter({ text: "Seus cargos, suas escolhas" })
         .setTimestamp();
 
       const components = rolePanelButtons(
@@ -1224,7 +1227,7 @@ async function handleInteraction(interaction: Interaction) {
     const legacyCommandMessage =
       interaction.commandName === "painel-tickets"
         ? "Este comando antigo foi substituído. Use **/painel ticket** para publicar o painel de atendimento."
-        : "Este comando não está mais disponível. Confira os comandos atuais do Gerais City RP.";
+        : "Este comando não está mais disponível. Confira os comandos atuais do servidor.";
     await respond(interaction, {
       content: legacyCommandMessage,
       ephemeral: true,
@@ -1302,7 +1305,7 @@ async function handleInteraction(interaction: Interaction) {
       }
 
       container.addTextDisplayComponents(
-        new TextDisplayBuilder().setContent("-# Gerais City RP • Comunicado oficial"),
+        new TextDisplayBuilder().setContent("-# Comunicado oficial"),
       );
 
       await targetChannel.send({
@@ -1461,6 +1464,42 @@ async function handleInteraction(interaction: Interaction) {
     return;
   }
 
+  if ((interaction.isUserSelectMenu() || interaction.isChannelSelectMenu() || interaction.isRoleSelectMenu()) && interaction.customId.startsWith("shield_select:")) {
+    const guild = interaction.guild;
+    if (!guild || !shield.isOwner(interaction.user.id) || !shield.isTargetGuild(guild.id)) {
+      await interaction.reply({content:"⛔ Configuração exclusiva do proprietário no servidor autorizado.",ephemeral:true});
+      return;
+    }
+    const [, action, channelId] = interaction.customId.split(":");
+    const selected = interaction.values[0];
+    if (!selected || !/^\d{15,22}$/.test(selected)) {
+      await interaction.reply({content:"Seleção inválida.",ephemeral:true});
+      return;
+    }
+    if (interaction.isChannelSelectMenu() && action === "verification_channel") {
+      await interaction.update({
+        content: "Canal selecionado: <#" + selected + ">. Agora escolha o cargo que será entregue aos membros aprovados. A seleção publica o painel.",
+        components: [new ActionRowBuilder<RoleSelectMenuBuilder>().addComponents(new RoleSelectMenuBuilder().setCustomId("shield_select:verification_role:" + selected).setPlaceholder("Escolher cargo de verificação").setMinValues(1).setMaxValues(1))],
+        allowedMentions:{parse:[]},
+      });
+      return;
+    }
+    if (interaction.isRoleSelectMenu() && action === "verification_role" && channelId && /^\d{15,22}$/.test(channelId)) {
+      await interaction.deferUpdate();
+      const result = await shield.panelAction(guild, interaction.user.id, "verification_publish", {channelId,roleId:selected});
+      await interaction.editReply({content:result.content ?? "Configuração concluída.",embeds:result.embeds ?? [],components:[],allowedMentions:{parse:[]}});
+      return;
+    }
+    if (interaction.isUserSelectMenu() && ["bot_add","bot_remove","team_add","team_remove"].includes(action ?? "")) {
+      await interaction.deferUpdate();
+      const result = await shield.panelAction(guild, interaction.user.id, action!, {targetId:selected});
+      await interaction.editReply({content:result.content ?? "Configuração concluída.",embeds:result.embeds ?? [],components:[],allowedMentions:{parse:[]}});
+      return;
+    }
+    await interaction.reply({content:"Ação de segurança inválida.",ephemeral:true});
+    return;
+  }
+
   if (!interaction.isButton()) return;
 
   if (interaction.customId === "verification_check") {
@@ -1470,10 +1509,24 @@ async function handleInteraction(interaction: Interaction) {
 
   if (interaction.customId === "ticket_start") {
     await interaction.reply({
-      content: "**🎫 Central de Atendimento**\nSelecione no menu abaixo o assunto que corresponde à sua solicitação. A equipe do Gerais City RP atenderá você assim que possível.",
+      content: "**🎫 Central de Atendimento**\nSelecione no menu abaixo o assunto que corresponde à sua solicitação. A equipe do servidor atenderá você assim que possível.",
       components: [ticketCategorySelect()],
       ephemeral: true,
     });
+    return;
+  }
+
+  if (interaction.customId.startsWith("shield_manual:")) {
+    if (!interaction.guild || !shield.isOwner(interaction.user.id) || !shield.isTargetGuild(interaction.guild.id)) {
+      await interaction.reply({content:"⛔ Configuração exclusiva do proprietário.",ephemeral:true});
+      return;
+    }
+    const action = interaction.customId.split(":")[1] ?? "";
+    if (!["bot_add","bot_remove","team_add","team_remove"].includes(action)) {
+      await interaction.reply({content:"Ação inválida.",ephemeral:true});
+      return;
+    }
+    await interaction.showModal(securitySingleIdModal("shield_cfg_" + action, action.endsWith("_add") ? "Adicionar conta" : "Remover conta", "ID da conta", "Cole o ID da conta"));
     return;
   }
 
@@ -1483,7 +1536,7 @@ async function handleInteraction(interaction: Interaction) {
       return;
     }
     if (!shield.isOwner(interaction.user.id)) {
-      await interaction.reply({ content: "⛔ Os controles do Gerais Shield são exclusivos do proprietário configurado em SECURITY_OWNER_ID.", ephemeral: true });
+      await interaction.reply({ content: "⛔ Os controles do Shield são exclusivos do proprietário configurado em SECURITY_OWNER_ID.", ephemeral: true });
       return;
     }
 
@@ -1498,6 +1551,30 @@ async function handleInteraction(interaction: Interaction) {
       return;
     }
 
+    if (!shield.isTargetGuild(interaction.guild.id)) {
+      await interaction.reply({content:"Este controle só funciona no servidor autorizado.",ephemeral:true});
+      return;
+    }
+    if (["bot_add","bot_remove","team_add","team_remove"].includes(action)) {
+      const selector = new UserSelectMenuBuilder().setCustomId("shield_select:" + action)
+        .setPlaceholder(action.startsWith("bot_") ? "Selecionar conta de bot" : "Selecionar membro")
+        .setMinValues(1).setMaxValues(1);
+      await interaction.reply({content:"Escolha a conta para " + (action.endsWith("_add") ? "adicionar à lista." : "remover da lista.") + " Se a conta não aparecer, use o ID.",ephemeral:true,components:[
+        new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(selector),
+        new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId("shield_manual:" + action).setLabel("Usar ID").setStyle(ButtonStyle.Secondary)),
+      ]});
+      return;
+    }
+    if (action === "log_channel") {
+      await interaction.deferUpdate();
+      await interaction.editReply(await buildLogRoutePicker(interaction.guild, shield.logChannelId || null, "security"));
+      return;
+    }
+    if (action === "verification_publish") {
+      const selector = new ChannelSelectMenuBuilder().setCustomId("shield_select:verification_channel").setChannelTypes(ChannelType.GuildText).setPlaceholder("Escolher canal de verificação").setMinValues(1).setMaxValues(1);
+      await interaction.reply({content:"Escolha o canal de texto onde será publicado o painel de verificação.",ephemeral:true,components:[new ActionRowBuilder<ChannelSelectMenuBuilder>().addComponents(selector)]});
+      return;
+    }
     const modalByAction: Record<string, ModalBuilder> = {
       bot_add: securitySingleIdModal("shield_cfg_bot_add", "Permitir bot", "ID do bot", "Cole o ID da conta do bot"),
       bot_remove: securitySingleIdModal("shield_cfg_bot_remove", "Remover bot", "ID do bot", "Cole o ID da conta do bot"),
@@ -1509,10 +1586,6 @@ async function handleInteraction(interaction: Interaction) {
     const modal = modalByAction[action];
     if (modal) {
       await interaction.showModal(modal);
-      return;
-    }
-    if (action === "verification_publish") {
-      await interaction.showModal(securityVerificationModal());
       return;
     }
 
@@ -1783,83 +1856,83 @@ client.once(Events.ClientReady, async (readyClient) => {
 client.on(Events.GuildAuditLogEntryCreate, (entry, guild) => {
   if (!shield.isTargetGuild(guild.id)) return;
   void deliverDiscordAudit(entry, guild, shield.logChannelId || null)
-    .catch(() => console.warn("Gerais Audit: falha ao processar entrada de auditoria."));
+    .catch(() => console.warn("Auditoria Discord: falha ao processar entrada de auditoria."));
 });
 
 // A proteção passiva é independente dos slash commands e continua ativa 24h
 // enquanto o cliente Discord estiver conectado.
 client.on(Events.GuildMemberAdd, (member) => {
-  void shield.memberJoin(member).catch((error) => console.error("Gerais Shield Final/entrada:", error));
+  void shield.memberJoin(member).catch((error) => console.error("Shield/entrada:", error));
 });
 client.on(Events.GuildMemberRemove, (member) => {
-  void shield.memberRemove(member).catch((error) => console.error("Gerais Shield Final/saída-kick:", error));
+  void shield.memberRemove(member).catch((error) => console.error("Shield/saída-kick:", error));
 });
 client.on(Events.MessageCreate, (message) => {
-  void shield.message(message).catch((error) => console.error("Gerais Shield Final/mensagem:", error));
+  void shield.message(message).catch((error) => console.error("Shield/mensagem:", error));
 });
 client.on(Events.ChannelUpdate, (before, after) => {
   if (before.isDMBased() || after.isDMBased()) return;
-  void shield.channelUpdate(before, after).catch((error) => console.error("Gerais Shield Final/canal:", error));
+  void shield.channelUpdate(before, after).catch((error) => console.error("Shield/canal:", error));
 });
 client.on(Events.ChannelCreate, (channel) => {
   if (channel.isDMBased()) return;
-  void shield.creationAction(channel.guild, AuditLogEvent.ChannelCreate, channel.id, "criação de canal", async () => channel.delete("Gerais Shield Final: criação em massa / anti-cópia"))
-    .catch((error) => console.error("Gerais Shield Final/criação de canal:", error));
+  void shield.creationAction(channel.guild, AuditLogEvent.ChannelCreate, channel.id, "criação de canal", async () => channel.delete("Shield: criação em massa / anti-cópia"))
+    .catch((error) => console.error("Shield/criação de canal:", error));
 });
 client.on(Events.ChannelDelete, (channel) => {
   if (channel.isDMBased()) return;
   void shield.destructiveAction(channel.guild, AuditLogEvent.ChannelDelete, channel.id, "exclusão de canal")
-    .catch((error) => console.error("Gerais Shield Final/exclusão de canal:", error));
+    .catch((error) => console.error("Shield/exclusão de canal:", error));
 });
 client.on(Events.GuildRoleCreate, (role) => {
-  void shield.creationAction(role.guild, AuditLogEvent.RoleCreate, role.id, "criação de cargo", async () => role.delete("Gerais Shield Final: criação em massa / anti-cópia"))
-    .catch((error) => console.error("Gerais Shield Final/criação de cargo:", error));
+  void shield.creationAction(role.guild, AuditLogEvent.RoleCreate, role.id, "criação de cargo", async () => role.delete("Shield: criação em massa / anti-cópia"))
+    .catch((error) => console.error("Shield/criação de cargo:", error));
 });
 client.on(Events.GuildRoleDelete, (role) => {
   void shield.destructiveAction(role.guild, AuditLogEvent.RoleDelete, role.id, "exclusão de cargo")
-    .catch((error) => console.error("Gerais Shield Final/exclusão de cargo:", error));
+    .catch((error) => console.error("Shield/exclusão de cargo:", error));
 });
 client.on(Events.GuildBanAdd, (ban) => {
   void shield.destructiveAction(ban.guild, AuditLogEvent.MemberBanAdd, ban.user.id, "banimento")
-    .catch((error) => console.error("Gerais Shield Final/banimento:", error));
+    .catch((error) => console.error("Shield/banimento:", error));
 });
 client.on(Events.GuildMemberUpdate, (before, after) => {
-  void shield.memberUpdate(before, after).catch((error) => console.error("Gerais Shield Final/permissão de membro:", error));
+  void shield.memberUpdate(before, after).catch((error) => console.error("Shield/permissão de membro:", error));
 });
 client.on(Events.InviteCreate, (invite) => {
-  void shield.inviteCreate(invite).catch((error) => console.error("Gerais Shield Final/convite:", error));
+  void shield.inviteCreate(invite).catch((error) => console.error("Shield/convite:", error));
 });
 client.on(Events.GuildRoleUpdate, (before, after) => {
-  void shield.roleUpdate(before, after).catch((error) => console.error("Gerais Shield Final/cargo:", error));
+  void shield.roleUpdate(before, after).catch((error) => console.error("Shield/cargo:", error));
 });
 client.on(Events.GuildUpdate, (before, after) => {
-  void shield.guildUpdate(before, after).catch((error) => console.error("Gerais Shield Final/servidor:", error));
+  void shield.guildUpdate(before, after).catch((error) => console.error("Shield/servidor:", error));
 });
 client.on(Events.WebhooksUpdate, (channel) => {
   if (channel.type === ChannelType.GuildText) {
-    void shield.webhookUpdate(channel).catch((error) => console.error("Gerais Shield Final/webhook:", error));
+    void shield.webhookUpdate(channel).catch((error) => console.error("Shield/webhook:", error));
   }
 });
 client.on(Events.GuildEmojiCreate, (emoji) => {
-  void shield.creationAction(emoji.guild, AuditLogEvent.EmojiCreate, emoji.id, "criação de emoji", async () => emoji.delete("Gerais Shield Final: criação em massa / anti-cópia"))
-    .catch((error) => console.error("Gerais Shield Final/criação de emoji:", error));
+  void shield.creationAction(emoji.guild, AuditLogEvent.EmojiCreate, emoji.id, "criação de emoji", async () => emoji.delete("Shield: criação em massa / anti-cópia"))
+    .catch((error) => console.error("Shield/criação de emoji:", error));
 });
 client.on(Events.GuildEmojiDelete, (emoji) => {
   void shield.destructiveAction(emoji.guild, AuditLogEvent.EmojiDelete, emoji.id, "exclusão de emoji")
-    .catch((error) => console.error("Gerais Shield Final/exclusão de emoji:", error));
+    .catch((error) => console.error("Shield/exclusão de emoji:", error));
 });
 client.on(Events.GuildStickerCreate, (sticker) => {
   if (!sticker.guild) return;
-  void shield.creationAction(sticker.guild, AuditLogEvent.StickerCreate, sticker.id, "criação de sticker", async () => sticker.delete("Gerais Shield Final: criação em massa / anti-cópia"))
-    .catch((error) => console.error("Gerais Shield Final/criação de sticker:", error));
+  void shield.creationAction(sticker.guild, AuditLogEvent.StickerCreate, sticker.id, "criação de sticker", async () => sticker.delete("Shield: criação em massa / anti-cópia"))
+    .catch((error) => console.error("Shield/criação de sticker:", error));
 });
 client.on(Events.GuildStickerDelete, (sticker) => {
   if (!sticker.guild) return;
   void shield.destructiveAction(sticker.guild, AuditLogEvent.StickerDelete, sticker.id, "exclusão de sticker")
-    .catch((error) => console.error("Gerais Shield Final/exclusão de sticker:", error));
+    .catch((error) => console.error("Shield/exclusão de sticker:", error));
 });
 client.on(Events.GuildIntegrationsUpdate, (guild) => {
-  void shield.integrationsUpdate(guild).catch((error) => console.error("Gerais Shield Final/integração:", error));
+  void shield.integrationsUpdate(guild).catch((error) => console.error("Shield/integração:", error));
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
@@ -1897,9 +1970,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (interaction.isRepliable()) {
       // A deferred reply has an outstanding response; a deferred update refers
       // to the existing panel, which must never be replaced by an error.
-      const updatesPanel = ((interaction.isButton() || interaction.isChannelSelectMenu()) && interaction.customId.startsWith("log_route_")) || (interaction.isButton() && (
+      const updatesPanel = ((interaction.isButton() || interaction.isChannelSelectMenu()) && interaction.customId.startsWith("log_route_")) ||
+        ((interaction.isUserSelectMenu() || interaction.isRoleSelectMenu() || interaction.isChannelSelectMenu()) && interaction.customId.startsWith("shield_select:")) || (interaction.isButton() && (
         interaction.customId.startsWith("admin_panel:") ||
-        ["back", "toggle", "mode", "safe", "snapshot_create", "release", "test", "verification_disable"]
+        ["back", "toggle", "mode", "safe", "snapshot_create", "release", "test", "verification_disable", "log_channel"]
           .some((action) => interaction.customId === "admin_security:" + action)
       ));
       if (interaction.deferred && !interaction.replied && !updatesPanel) {
@@ -1970,7 +2044,7 @@ async function respondHealth(
   const storage = await persistenceMode();
 
   res.status(connected ? 200 : 503).json({
-    service: "Gerais City RP Bot",
+    service: "Bot Discord",
     version: "FINAL-1.3",
     status: connected ? "online" : "discord_disconnected",
     connected,

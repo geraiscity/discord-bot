@@ -7,7 +7,7 @@ import {
 export const commandDefinitions = [
   new SlashCommandBuilder()
     .setName("painel")
-    .setDescription("Publica painéis de atendimento do Gerais City.")
+    .setDescription("Publica painéis de atendimento do servidor.")
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageChannels.toString())
     .addSubcommand((sub) =>
       sub
